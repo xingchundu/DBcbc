@@ -50,12 +50,15 @@ public class LogMinerHelper {
             + "  NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'" + "  NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'" + "  NLS_NUMERIC_CHARACTERS = '.,'" + "  TIME_ZONE = '00:00'";
     private static final String LOG_MINER_SQL_CURRENT_REDO_SEQUENCE = "SELECT SEQUENCE# FROM V$LOG WHERE STATUS = 'CURRENT'";
     private static final String LOG_MINER_SQL_END_LOG_MINER = "BEGIN SYS.DBMS_LOGMNR.END_LOGMNR(); END;";
-    private static final String LOG_MINER_SQL_START_LOG_MINER = "DECLARE\n" + "start_scn NUMBER := ?; end_scn NUMBER := ?; first_file BOOLEAN := true; \n" + "BEGIN \n" + "FOR log_file IN\n" + " (\n"
+    private static final String LOG_MINER_SQL_ADD_LOG_FILES = "DECLARE\n" + "start_scn NUMBER := ?; end_scn NUMBER := ?; first_file BOOLEAN := true; \n" + "BEGIN \n" + "FOR log_file IN\n" + " (\n"
             + "  SELECT MIN(name) name, first_change# FROM \n" + "  (\n"
             + "   SELECT member AS name, first_change# FROM v$log l INNER JOIN v$logfile f ON l.group# = f.group# WHERE (l.STATUS = 'CURRENT' OR l.STATUS = 'ACTIVE') AND first_change# < end_scn\n"
             + "   UNION\n" + "   SELECT name, first_change# FROM v$archived_log WHERE name IS NOT NULL AND STANDBY_DEST='NO' AND first_change# < end_scn AND next_change# > start_scn \n"
             + "  ) group by first_change# ORDER BY first_change# \n" + " ) LOOP \n" + " IF first_file THEN\n" + "  SYS.DBMS_LOGMNR.add_logfile(log_file.name, SYS.DBMS_LOGMNR.NEW);\n"
             + "  first_file := false;\n" + " ELSE\n" + "  SYS.DBMS_LOGMNR.add_logfile(log_file.name, SYS.DBMS_LOGMNR.ADDFILE);\n" + " END IF;\n" + "END LOOP;\n" + "\n"
+            + "END;";
+
+    private static final String LOG_MINER_SQL_START_LOG_MINER = "BEGIN \n"
             + "SYS.DBMS_LOGMNR.start_logmnr( options => SYS.DBMS_LOGMNR.SKIP_CORRUPTION + SYS.DBMS_LOGMNR.NO_SQL_DELIMITER + SYS.DBMS_LOGMNR.NO_ROWID_IN_STMT + SYS.DBMS_LOGMNR.DICT_FROM_ONLINE_CATALOG);\n"
             + "END;";
 
@@ -160,11 +163,27 @@ public class LogMinerHelper {
     }
 
     public static void startLogMiner(Connection connection, long startScn, long endScn) throws SQLException {
-        try (PreparedStatement logMinerStartStmt = connection.prepareCall(LOG_MINER_SQL_START_LOG_MINER)) {
-            logMinerStartStmt.setString(1, String.valueOf(startScn));
-            logMinerStartStmt.setString(2, String.valueOf(endScn));
-            logMinerStartStmt.execute();
+        addLogFiles(connection, startScn, endScn);
+        startLogMinerSession(connection);
+    }
+
+    /**
+     * 只负责把覆盖 [startScn, endScn) 的日志文件加入 LogMiner。
+     * 注意：这里不会调用 START_LOGMNR，避免在 redo 切换场景下频繁重启会话导致 alert.log 暴涨。
+     */
+    public static void addLogFiles(Connection connection, long startScn, long endScn) throws SQLException {
+        try (PreparedStatement addFilesStmt = connection.prepareCall(LOG_MINER_SQL_ADD_LOG_FILES)) {
+            addFilesStmt.setString(1, String.valueOf(startScn));
+            addFilesStmt.setString(2, String.valueOf(endScn));
+            addFilesStmt.execute();
         }
+    }
+
+    /**
+     * 启动 LogMiner 会话（假设日志文件已经 add 完成）。
+     */
+    public static void startLogMinerSession(Connection connection) throws SQLException {
+        executeCallableStatement(connection, LOG_MINER_SQL_START_LOG_MINER);
     }
 
     public static long getCurrentScn(Connection connection) throws SQLException {

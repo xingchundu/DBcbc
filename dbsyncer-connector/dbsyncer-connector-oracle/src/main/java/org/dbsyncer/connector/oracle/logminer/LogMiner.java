@@ -71,6 +71,10 @@ public class LogMiner {
     private long processedScn = 0;
     private EventListener listener;
     private Worker worker;
+    /**
+     * LogMiner 会话是否已启动。用于避免 redo 切换时频繁 START/END 导致 alert.log 暴涨。
+     */
+    private volatile boolean logMinerSessionStarted = false;
 
     public LogMiner(String username, String password, String url, String schema, String driverClassName) {
         this.username = username;
@@ -185,6 +189,7 @@ public class LogMiner {
 
     private void restartLogMiner(long endScn) throws SQLException {
         LogMinerHelper.startLogMiner(connection, startScn, endScn);
+        logMinerSessionStarted = true;
         currentRedoLogSequences = LogMinerHelper.getCurrentRedoLogSequences(connection);
     }
 
@@ -195,6 +200,17 @@ public class LogMiner {
             return true;
         }
         return false;
+    }
+
+    /**
+     * redo 切换时只 add 新日志文件，不重启 LogMiner 会话。
+     */
+    private void addLogFilesIfNeeded(long endScn) throws SQLException {
+        if (!logMinerSessionStarted) {
+            restartLogMiner(endScn);
+            return;
+        }
+        LogMinerHelper.addLogFiles(connection, startScn, endScn);
     }
 
     private void logMinerViewProcessor(ResultSet rs) throws SQLException {
@@ -552,7 +568,7 @@ public class LogMiner {
                     // 3. 检查 Redo Log 切换
                     if (redoLogSwitchOccurred()) {
                         logger.info("Switch to new redo log");
-                        restartLogMiner(endScn);
+                        addLogFilesIfNeeded(endScn);
                     }
 
                     // 4. 动态调整堆积偏移SCN
@@ -590,6 +606,7 @@ public class LogMiner {
                         if (e.getMessage().contains("ORA-00310")) {
                             logger.info("ORA-00310 restart log miner");
                             LogMinerHelper.endLogMiner(connection);
+                            logMinerSessionStarted = false;
                             restartLogMiner(endScn);
                             continue;
                         } else if (e.getMessage().contains("ORA-01013")) {
