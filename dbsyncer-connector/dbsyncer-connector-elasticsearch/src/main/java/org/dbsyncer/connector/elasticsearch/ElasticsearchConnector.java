@@ -222,6 +222,7 @@ public final class ElasticsearchConnector extends AbstractConnector implements C
                 }
 
                 // 7.x 版本以上
+                // 升级变动：https://www.elastic.co/guide/en/elasticsearch/reference/7.0/breaking-changes-7.0.html#breaking_70_mappings_changes
                 parseProperties(fields, mappingMetaData.sourceAsMap());
                 metaInfos.add(buildMetaInfo(table.getType(), index, fields, null));
             }
@@ -386,7 +387,10 @@ public final class ElasticsearchConnector extends AbstractConnector implements C
         PrimaryKeyUtil.findTablePrimaryKeys(table);
         Map<String, String> command = new HashMap<>();
         command.put(_TARGET_INDEX, table.getName());
-        command.put(_TYPE, String.valueOf(table.getExtInfo().get(_TYPE)));
+        Object type = table.getExtInfo().get(_TYPE);
+        if (type != null) {
+            command.put(_TYPE, String.valueOf(type));
+        }
         return command;
     }
 

@@ -5,6 +5,7 @@ package org.dbsyncer.connector.elasticsearch.validator;
 
 import org.dbsyncer.common.util.JsonUtil;
 import org.dbsyncer.common.util.NumberUtil;
+import org.dbsyncer.common.util.StringUtil;
 import org.dbsyncer.connector.elasticsearch.ElasticsearchConnector;
 import org.dbsyncer.connector.elasticsearch.config.ESConfig;
 import org.dbsyncer.sdk.connector.ConfigValidator;
@@ -52,7 +53,9 @@ public final class ESConfigValidator implements ConfigValidator<ElasticsearchCon
         Assert.notEmpty(fields, "字段不能为空.");
         table.setName(tableName);
         table.setColumn(fields);
-        table.getExtInfo().put(ElasticsearchConnector._TYPE, type);
+        if (StringUtil.isNotBlank(type)) {
+            table.getExtInfo().put(ElasticsearchConnector._TYPE, type);
+        }
         table.setType(connectorService.getExtendedTableType().getCode());
         return table;
     }
