@@ -10,10 +10,12 @@
 <body class="font-inter bg-gray-50 min-h-screen flex items-center justify-center p-4">
 <!-- 背景粒子特效画布：固定铺满屏幕，位于内容层之下 -->
 <canvas id="bgParticles" style="position:fixed;left:0;top:0;width:100%;height:100%;z-index:0;pointer-events:none;"></canvas>
-<!-- 登录卡片容器 -->
-<div class="w-full max-w-6xl grid md:grid-cols-2 shadow-2xl rounded-2xl overflow-hidden" style="position:relative;z-index:10;">
+<!-- 登录卡片容器（仅登录表单时：单列居中，不依赖原左侧品牌区） -->
+<div class="w-full max-w-md mx-auto shadow-2xl rounded-2xl overflow-hidden" style="position:relative;z-index:10;">
 
-    <!-- 左侧品牌展示区 -->
+    <!--
+    左侧品牌展示区（已隐藏，需恢复时取消本段注释，并将外层 class 改回
+    w-full max-w-6xl grid md:grid-cols-2 …；右侧登录区改回 w-full-50 right-0 absolute）
     <div class="md:flex bg-gradient-primary p-12 flex-col justify-between text-white">
         <div>
             <div class="flex items-center space-x-3 mb-12">
@@ -27,7 +29,6 @@
             <p class="text-white/80 mb-8 max-w-md">高效、稳定、安全的解决方案，为您的业务保驾护航</p>
         </div>
 
-        <!-- 特性列表 -->
         <div class="space-y-6">
             <div class="flex items-start space-x-4">
                 <div class="mt-1 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
@@ -60,10 +61,12 @@
             </div>
         </div>
     </div>
+    -->
 
     <!-- 右侧登录表单区 -->
-    <div class="bg-white p-8 md:p-12 flex flex-col h-full w-full-50 right-0 absolute">
+    <div class="bg-white p-8 md:p-12 flex flex-col h-full w-full">
         <div class="mt-6 md:mt-12">
+            <h1 id="appName" class="text-2xl font-bold text-dark tracking-tight mb-1">DBCDC</h1>
             <h2 class="text-responsive-xl font-bold text-dark mb-2">欢迎回来</h2>
             <p class="text-gray-500 mb-8">请输入您的账号信息登录系统</p>
 
