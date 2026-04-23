@@ -19,7 +19,7 @@ import java.time.LocalDate;
 @ConfigurationProperties(prefix = "info.app")
 public class AppConfig {
 
-    private String name = "DBSyncer";
+    private String name = "DBCDC";
 
     private String version;
 
