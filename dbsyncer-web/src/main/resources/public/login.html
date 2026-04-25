@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DBCDC - 登录</title>
-    <link type="image/x-icon" rel="icon" th:href="@{/img/logo.ico}"/>
+    <title>登录</title>
+    <!--<link type="image/x-icon" rel="icon" th:href="@{/img/logo.ico}"/>-->
     <link type="text/css" rel="stylesheet" th:href="@{/css/login.css}"/>
 </head>
 <body class="font-inter bg-gray-50 min-h-screen flex items-center justify-center p-4">
@@ -14,15 +14,15 @@
 <div class="w-full max-w-md mx-auto shadow-2xl rounded-2xl overflow-hidden" style="position:relative;z-index:10;">
 
     <!--
-    左侧品牌展示区（已隐藏，需恢复时取消本段注释，并将外层 class 改回
-    w-full max-w-6xl grid md:grid-cols-2 …；右侧登录区改回 w-full-50 right-0 absolute）
+    ========== 以下为原左侧品牌区（仅注释备份，不渲染；恢复时：取消本段与下方表单区注释的说明，
+    外层 class 改回 w-full max-w-6xl grid md:grid-cols-2 …；白底区改回 w-full-50 right-0 absolute）==========
     <div class="md:flex bg-gradient-primary p-12 flex-col justify-between text-white">
         <div>
             <div class="flex items-center space-x-3 mb-12">
                 <div class="w-10 h-10 rounded-lg bg-white/20 flex items-center justify-center">
                     <i class="svg-database"></i>
                 </div>
-                <h1 id="appName" class="text-2xl font-bold tracking-tight">DBCDC</h1>
+                <h1 class="text-2xl font-bold tracking-tight">DBCDC</h1>
             </div>
 
             <h2 class="text-responsive-2xl font-bold mb-4 text-shadow">数据同步，从未如此简单</h2>
@@ -61,14 +61,22 @@
             </div>
         </div>
     </div>
+    ========== 原左侧品牌区 注释备份 结束 ==========
     -->
 
-    <!-- 右侧登录表单区 -->
     <div class="bg-white p-8 md:p-12 flex flex-col h-full w-full">
-        <div class="mt-6 md:mt-12">
-            <h1 id="appName" class="text-2xl font-bold text-dark tracking-tight mb-1">DBCDC</h1>
+        <div class="mt-2 md:mt-4">
+            <!-- 应用名由 /index/version.json 写入，供脚本使用，不在页面上显示 -->
+            <span id="appName" class="login-app-name-hidden" aria-hidden="true"></span>
+
+            <!--
+            原表单项上方文案 + 底部署权区（仅注释备份，不渲染）
             <h2 class="text-responsive-xl font-bold text-dark mb-2">欢迎回来</h2>
             <p class="text-gray-500 mb-8">请输入您的账号信息登录系统</p>
+            <div class="mt-auto pt-8 border-t border-gray-100 text-center text-sm text-gray-500">
+                <p id="appCopyRight" style="text-align:center;"></p>
+            </div>
+            -->
 
             <!-- 登录表单 -->
             <form id="loginForm" class="space-y-6">
@@ -138,11 +146,6 @@
                     <span>登录中...</span>
                 </button>
             </form>
-        </div>
-
-        <!-- 页脚 -->
-        <div class="mt-auto pt-8 border-t border-gray-100 text-center text-sm text-gray-500">
-            <p id="appCopyRight" style="text-align:center;"></p>
         </div>
     </div>
 </div>
@@ -284,20 +287,17 @@
         togglePassword.querySelector('i').classList.toggle('svg-eye-slash');
     });
 
-    // 初始化加载版权信息
+    // 仅同步应用名（主界面侧栏等仍用 framework.js 拉版权；登录页不展示版权/营销文案）
     window.addEventListener('load', () => {
-        // 发送GET请求
         fetch($basePath + '/index/version.json').then(response => {
             if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
             return response.json();
         }).then(response => {
             if (response.success === true) {
-                document.getElementById('appName').textContent = response.data.appName;
-                document.getElementById('appCopyRight').innerHTML = response.data.appCopyRight;
+                const el = document.getElementById('appName');
+                if (el) el.textContent = response.data.appName;
             }
-        }).catch(error => {
-            throw new Error(`请求错误: ${error.message}`);
-        });
+        }).catch(function () { /* 静默，不影响登录 */ });
     });
 
     function validateItem($input, $error){

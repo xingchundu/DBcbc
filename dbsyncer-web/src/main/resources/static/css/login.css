@@ -370,3 +370,8 @@ a {
     border-top: 2px solid black;
     animation: rotate-loading 1s linear infinite;
 }
+
+/* 登录页 #appName 仅给 version.json 填充，不显示 */
+.login-app-name-hidden {
+    display: none;
+}
