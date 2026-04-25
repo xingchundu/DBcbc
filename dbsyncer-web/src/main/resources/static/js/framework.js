@@ -868,11 +868,9 @@ $(function () {
 
     refreshLoginUser();
     refreshLicense();
-    // 初始化版权信息
+    // 初始化水印（版本信息仍从 version.json 获取）
     doGetter("/index/version.json", {}, function (response) {
         if (response.success === true) {
-            // 获取底部版权信息
-            $("#copyRight").html(response.data.appCopyRight);
             settings.watermark_txt = response.data.watermark;
             watermark();
         }
