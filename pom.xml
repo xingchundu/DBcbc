@@ -20,6 +20,7 @@
         <module>dbsyncer-sample-plugin-mysql2pg</module>
         <module>dbsyncer-sample-plugin-oracle2oracle</module>
         <module>dbsyncer-storage</module>
+        <module>dbsyncer-ddl-transfer</module>
         <module>dbsyncer-web</module>
     </modules>
 

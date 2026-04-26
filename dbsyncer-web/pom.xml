@@ -17,6 +17,12 @@
             <version>${project.parent.version}</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbsyncer-ddl-transfer</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
         <!-- Web 容器，默认使用Tomcat-->
         <dependency>
             <groupId>org.springframework.boot</groupId>

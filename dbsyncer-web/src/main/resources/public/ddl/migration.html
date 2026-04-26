@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:th="http://www.thymeleaf.org" lang="zh-CN">
+
+<div class="form-container">
+    <div class="card-header">
+        <h3 class="card-title text-center">DDL 结构迁移</h3>
+    </div>
+    <div class="card-body space-y-4">
+        <p class="text-sm text-gray-600">
+            从<strong>连接管理</strong>中已配置的 MySQL / PostgreSQL / Oracle 数据源中选择源库与目标库，在目标库创建或补齐表结构（不迁移业务数据）。执行前请确认目标库可写并做好备份。
+            DDL 若新建了库，请先点<strong>刷新连接库列表</strong>，再到驱动管理重新选库后表列表才会完整。
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium mb-1">源连接</label>
+                <select id="ddlSourceConnector" class="w-full border border-gray-300 rounded px-3 py-2">
+                    <option value="">请选择</option>
+                    <option th:each="c : ${ddlConnectors}" th:value="${c.id}"
+                            th:text="${c.name + ' (' + c.config.connectorType + ')'}"></option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1">目标连接</label>
+                <select id="ddlTargetConnector" class="w-full border border-gray-300 rounded px-3 py-2">
+                    <option value="">请选择</option>
+                    <option th:each="c : ${ddlConnectors}" th:value="${c.id}"
+                            th:text="${c.name + ' (' + c.config.connectorType + ')'}"></option>
+                </select>
+            </div>
+        </div>
+        <div class="flex flex-wrap justify-end gap-2">
+            <button type="button" class="btn btn-default" onclick="doLoader('/connector/list')">
+                <i class="fa fa-database"></i> 连接管理
+            </button>
+            <button type="button" class="btn btn-default" id="ddlRefreshMetaBtn" title="从数据源重新拉取库名并保存到连接配置（源/目标至少选一个）">
+                <i class="fa fa-refresh"></i> 刷新连接库列表
+            </button>
+            <button type="button" class="btn btn-primary" id="ddlTransferBtn">
+                <i class="fa fa-play"></i> 开始迁移结构
+            </button>
+        </div>
+        <div class="mt-4">
+            <div class="text-sm font-medium mb-1">迁移日志</div>
+            <div id="ddlLogOutput"
+                 class="max-h-96 overflow-y-auto border border-gray-200 rounded bg-gray-50 p-2 font-mono text-left"
+                 style="min-height: 120px;">
+                <div class="text-gray-500 text-xs">执行「开始迁移结构」后在此显示 database.ddl.transfer 模块输出；ERROR 为红色，WARN 为琥珀色。</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function ddlRenderMigrationLogs(response) {
+    var list = (response && response.data && response.data.logs) ? response.data.logs : [];
+    var $box = $('#ddlLogOutput');
+    $box.empty();
+    if (!list.length) {
+        $box.append('<div class="text-gray-500 text-xs">暂无日志</div>');
+        return;
+    }
+    list.forEach(function (row) {
+        var lv = (row.level || 'INFO').toUpperCase();
+        var $line = $('<pre class="ddl-log-line whitespace-pre-wrap break-words text-xs leading-snug mb-0.5 border-0 bg-transparent p-0 m-0"></pre>');
+        $line.text(row.message || '');
+        if (lv === 'ERROR' || lv === 'FATAL') {
+            $line.addClass('text-red-600');
+        } else if (lv === 'WARN') {
+            $line.addClass('text-amber-700');
+        } else {
+            $line.addClass('text-gray-800');
+        }
+        $box.append($line);
+    });
+    var el = $box.get(0);
+    if (el) {
+        el.scrollTop = el.scrollHeight;
+    }
+}
+$(function () {
+    window.backIndexPage = function () {
+        doLoader('/ddl/migration');
+    };
+    $('#ddlRefreshMetaBtn').on('click', function () {
+        var sourceConnectorId = $('#ddlSourceConnector').val();
+        var targetConnectorId = $('#ddlTargetConnector').val();
+        if (!sourceConnectorId && !targetConnectorId) {
+            bootGrowl('请至少选择源连接或目标连接', 'warning');
+            return;
+        }
+        var btn = $(this);
+        btn.prop('disabled', true);
+        doPoster('/ddl/refreshConnectorMeta', {
+            sourceConnectorId: sourceConnectorId || '',
+            targetConnectorId: targetConnectorId || ''
+        }, function (response) {
+            btn.prop('disabled', false);
+            if (response.success) {
+                bootGrowl(response.message || '刷新完成', 'success');
+            } else {
+                bootGrowl(response.message || '刷新失败', 'danger');
+            }
+        });
+    });
+    $('#ddlTransferBtn').on('click', function () {
+        var sourceConnectorId = $('#ddlSourceConnector').val();
+        var targetConnectorId = $('#ddlTargetConnector').val();
+        if (!sourceConnectorId || !targetConnectorId) {
+            bootGrowl('请选择源连接与目标连接', 'warning');
+            return;
+        }
+        if (sourceConnectorId === targetConnectorId) {
+            bootGrowl('源连接与目标连接不能相同', 'warning');
+            return;
+        }
+        var btn = $(this);
+        btn.prop('disabled', true);
+        $('#ddlLogOutput').html('<div class="text-gray-500 text-xs">执行中…</div>');
+        doPoster('/ddl/transfer', {sourceConnectorId: sourceConnectorId, targetConnectorId: targetConnectorId}, function (response) {
+            btn.prop('disabled', false);
+            ddlRenderMigrationLogs(response);
+            if (response.success) {
+                bootGrowl(response.message || '迁移完成', 'success');
+            } else {
+                bootGrowl(response.message || '迁移失败', 'danger');
+            }
+        });
+    });
+});
+</script>
+</html>

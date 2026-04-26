@@ -19,6 +19,7 @@ import org.dbsyncer.parser.model.ConfigModel;
 import org.dbsyncer.parser.model.Connector;
 import org.dbsyncer.parser.model.Mapping;
 import org.dbsyncer.parser.util.ConnectorInstanceUtil;
+import org.dbsyncer.sdk.config.DatabaseConfig;
 import org.dbsyncer.sdk.connector.ConnectorInstance;
 import org.dbsyncer.sdk.constant.ConfigConstant;
 import org.dbsyncer.sdk.model.ConnectorConfig;
@@ -128,6 +129,24 @@ public class ConnectorServiceImpl extends BaseServiceImpl implements ConnectorSe
     public List<String> getDatabase(String id) {
         Connector connector = profileComponent.getConnector(id);
         return connector != null ? connector.getDatabases() : Collections.emptyList();
+    }
+
+    @Override
+    public String refreshConnectorDatabases(String id) {
+        Assert.hasText(id, "连接器 id 不能为空");
+        Connector connector = profileComponent.getConnector(id);
+        Assert.notNull(connector, "连接不存在");
+        ConnectorConfig config = connector.getConfig();
+        if (!(config instanceof DatabaseConfig)) {
+            return String.format("[%s] 非关系型库连接，已跳过", connector.getName());
+        }
+        org.dbsyncer.sdk.spi.ConnectorService connectorSpi = connectorFactory.getConnectorService(config.getConnectorType());
+        ConnectorInstance instance = connectorFactory.connect(connector.getId());
+        List<String> databases = connectorSpi.getDatabases(instance);
+        connector.setDatabases(databases != null ? databases : Collections.emptyList());
+        profileComponent.editConfigModel(connector);
+        int n = connector.getDatabases() == null ? 0 : connector.getDatabases().size();
+        return String.format("[%s] 已从数据源重新加载库列表（共 %d 个）", connector.getName(), n);
     }
 
     @Override

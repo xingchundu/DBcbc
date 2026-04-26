@@ -63,6 +63,14 @@ public interface ConnectorService {
     List<String> getDatabase(String id);
 
     /**
+     * 从数据源重新拉取库列表并写回连接器存储（用于新建库后更新下拉数据等）
+     *
+     * @param id 连接器 id
+     * @return 提示文案
+     */
+    String refreshConnectorDatabases(String id);
+
+    /**
      * 获取Schema信息
      *
      * @param id
