@@ -5,7 +5,6 @@ package org.dbcbc.connector.oracle.logminer;
 
 import org.dbcbc.common.util.CollectionUtils;
 import org.dbcbc.common.util.StringUtil;
-import org.dbcbc.connector.oracle.OracleException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,7 +43,9 @@ public class LogMinerHelper {
     private static final List<String> LOG_MINER_ORACLE_11_PRIVILEGES_NEEDED = Arrays.asList("CREATE SESSION", "SELECT ANY TRANSACTION", "SELECT ANY DICTIONARY");
     private static final String LOG_MINER_SELECT_CATALOG_ROLE_ROLE = "SELECT_CATALOG_ROLE";
     private static final String LOG_MINER_SQL_GET_CURRENT_SCN = "select CURRENT_SCN from V$DATABASE";
-    private static final String LOG_MINER_SQL_IS_CDB = "select cdb from v$database";
+    private static final String LOG_MINER_SQL_GET_CURRENT_SCN_FALLBACK = "SELECT DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER FROM DUAL";
+    /** 业务用户通常无 V$DATABASE 权限，改用 USERENV 判断 CDB */
+    private static final String LOG_MINER_SQL_IS_CDB = "SELECT SYS_CONTEXT('USERENV','CDB') FROM DUAL";
     private static final String LOG_MINER_SQL_ALTER_SESSION_CONTAINER = "alter session set container=CDB$ROOT";
     private static final String LOG_MINER_SQL_ALTER_NLS_SESSION_PARAMETERS = "ALTER SESSION SET " + "  NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS'"
             + "  NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'" + "  NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'" + "  NLS_NUMERIC_CHARACTERS = '.,'" + "  TIME_ZONE = '00:00'";
@@ -175,32 +176,92 @@ public class LogMinerHelper {
     }
 
     public static long getCurrentScn(Connection connection) throws SQLException {
-        try (Statement statement = connection.createStatement()) {
-            try (ResultSet rs = statement.executeQuery(LOG_MINER_SQL_GET_CURRENT_SCN)) {
-                if (!rs.next()) {
-                    throw new IllegalStateException("Couldn't get SCN");
-                }
-                return rs.getLong(1);
+        try {
+            return queryScn(connection, LOG_MINER_SQL_GET_CURRENT_SCN);
+        } catch (SQLException e) {
+            if (!isMissingDictionaryView(e)) {
+                throw e;
             }
+            logger.warn("无法访问 V$DATABASE 获取 SCN，尝试 DBMS_FLASHBACK 备用方案: {}", resolveSqlMessage(e));
+        }
+        try {
+            return queryScn(connection, LOG_MINER_SQL_GET_CURRENT_SCN_FALLBACK);
+        } catch (SQLException e) {
+            throw new SQLException("无法获取当前 SCN，请为 LogMiner 用户授予 V$DATABASE 访问权限或 EXECUTE ON DBMS_FLASHBACK", e);
         }
     }
 
-    public static void setSessionContainerIfCdbMode(Connection connection) throws SQLException {
-        try (Statement statement = connection.createStatement()) {
-            try (ResultSet rs = statement.executeQuery(LOG_MINER_SQL_IS_CDB)) {
-                rs.next();
-                // cdb模式 需要切换到根容器
-                if (rs.getString(1).equalsIgnoreCase("YES")) {
-                    try (PreparedStatement ps = connection.prepareStatement(LOG_MINER_SQL_ALTER_SESSION_CONTAINER)) {
-                        try {
-                            ps.execute();
-                        } catch (SQLException e) {
-                            throw new OracleException(String.format("sql=%s error=%s", LOG_MINER_SQL_ALTER_SESSION_CONTAINER, e.getMessage()));
-                        }
-                    }
+    private static long queryScn(Connection connection, String sql) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(sql)) {
+            if (!rs.next()) {
+                throw new IllegalStateException("Couldn't get SCN");
+            }
+            return rs.getLong(1);
+        }
+    }
+
+    /**
+     * CDB 检测/切换为可选步骤：普通业务用户常无 V$DATABASE 权限(ORA-00942)，失败时不中断 LogMiner 启动。
+     */
+    public static void setSessionContainerIfCdbMode(Connection connection) {
+        try {
+            Boolean cdbMode = detectCdbMode(connection);
+            if (cdbMode == null || !cdbMode) {
+                return;
+            }
+            try (Statement statement = connection.createStatement()) {
+                statement.execute(LOG_MINER_SQL_ALTER_SESSION_CONTAINER);
+            }
+        } catch (Exception e) {
+            logger.warn("CDB 容器检测/切换未完成，将在当前会话继续 LogMiner: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 判断是否为 CDB 模式（通过 USERENV，无需 V$DATABASE 权限）。
+     */
+    private static Boolean detectCdbMode(Connection connection) {
+        try (Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(LOG_MINER_SQL_IS_CDB)) {
+            if (!rs.next()) {
+                return false;
+            }
+            String cdb = rs.getString(1);
+            return cdb != null && "YES".equalsIgnoreCase(cdb.trim());
+        } catch (Exception e) {
+            logger.warn("无法判断 CDB 模式，跳过容器切换: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean isMissingDictionaryView(SQLException e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof SQLException) {
+                SQLException sqlException = (SQLException) current;
+                if (sqlException.getErrorCode() == 942 || sqlException.getErrorCode() == 1031) {
+                    return true;
                 }
             }
+            String message = current.getMessage();
+            if (message != null && (message.contains("ORA-00942") || message.contains("ORA-01031"))) {
+                return true;
+            }
+            current = current.getCause();
         }
+        return false;
+    }
+
+    private static String resolveSqlMessage(SQLException e) {
+        if (e == null) {
+            return "";
+        }
+        String message = e.getMessage();
+        if (StringUtil.isNotBlank(message)) {
+            return message;
+        }
+        return e.getClass().getSimpleName();
     }
 
     private static List<String> queryList(Connection connection, String querySql, String key) throws SQLException {

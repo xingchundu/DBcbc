@@ -1,9 +1,12 @@
 package org.dbcbc.connector.dm;
 
+import org.dbcbc.common.model.Result;
+import org.dbcbc.common.util.CollectionUtils;
 import org.dbcbc.common.util.StringUtil;
 import org.dbcbc.connector.dm.cdc.DmListener;
 import org.dbcbc.connector.dm.schema.DmSchemaResolver;
 import org.dbcbc.connector.dm.validator.DmConfigValidator;
+import org.dbcbc.sdk.config.CommandConfig;
 import org.dbcbc.sdk.config.DatabaseConfig;
 import org.dbcbc.sdk.config.SqlBuilderConfig;
 import org.dbcbc.sdk.enums.SqlBuilderEnum;
@@ -11,19 +14,28 @@ import org.dbcbc.sdk.connector.ConfigValidator;
 import org.dbcbc.sdk.connector.database.AbstractDatabaseConnector;
 import org.dbcbc.sdk.connector.database.Database;
 import org.dbcbc.sdk.connector.database.DatabaseConnectorInstance;
+import org.dbcbc.sdk.constant.ConnectorConstant;
 import org.dbcbc.sdk.constant.DatabaseConstant;
 import org.dbcbc.sdk.enums.ListenerTypeEnum;
 import org.dbcbc.sdk.listener.DatabaseQuartzListener;
 import org.dbcbc.sdk.listener.Listener;
+import org.dbcbc.sdk.model.Field;
 import org.dbcbc.sdk.model.PageSql;
+import org.dbcbc.sdk.model.Table;
+import org.dbcbc.sdk.plugin.AbstractPluginContext;
+import org.dbcbc.sdk.plugin.PluginContext;
 import org.dbcbc.sdk.plugin.ReaderContext;
 import org.dbcbc.sdk.schema.SchemaResolver;
 import org.dbcbc.sdk.util.PrimaryKeyUtil;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public final class DmConnector extends AbstractDatabaseConnector {
 
@@ -145,6 +157,50 @@ public final class DmConnector extends AbstractDatabaseConnector {
     }
 
     @Override
+    public Map<String, String> getTargetCommand(CommandConfig commandConfig) {
+        Map<String, String> map = super.getTargetCommand(commandConfig);
+        if (!commandConfig.isForceUpdate()) {
+            return map;
+        }
+        Table table = commandConfig.getTable();
+        List<String> primaryKeys = PrimaryKeyUtil.findTablePrimaryKeys(table);
+        if (CollectionUtils.isEmpty(primaryKeys) || StringUtil.isBlank(table.getName())) {
+            return map;
+        }
+        String schema = buildSchemaPrefix(commandConfig.getSchema());
+        List<Field> column = distinctColumns(table.getColumn());
+        SqlBuilderConfig config = new SqlBuilderConfig(this, schema, table.getName(), primaryKeys, column, null);
+        map.put(ConnectorConstant.OPERTION_INSERT, buildInsertSql(config));
+        map.put(SqlBuilderEnum.UPDATE.getName(), SqlBuilderEnum.UPDATE.getSqlBuilder().buildSql(config));
+        return map;
+    }
+
+    @Override
+    public Result writer(DatabaseConnectorInstance connectorInstance, PluginContext context) {
+        if (context.isForceUpdate() && isInsert(context.getEvent())
+                && StringUtil.isNotBlank(context.getCommand().get(ConnectorConstant.OPERTION_INSERT))
+                && context instanceof AbstractPluginContext) {
+            AbstractPluginContext pluginContext = (AbstractPluginContext) context;
+            boolean forceUpdate = pluginContext.isForceUpdate();
+            pluginContext.setForceUpdate(false);
+            try {
+                return super.writer(connectorInstance, context);
+            } finally {
+                pluginContext.setForceUpdate(forceUpdate);
+            }
+        }
+        return super.writer(connectorInstance, context);
+    }
+
+    @Override
+    protected boolean isBatchRowSuccess(int affectedRows, PluginContext context) {
+        if (isInsert(context.getEvent())) {
+            return affectedRows >= 0 || affectedRows == Statement.SUCCESS_NO_INFO;
+        }
+        return super.isBatchRowSuccess(affectedRows, context);
+    }
+
+    @Override
     public String buildInsertSql(SqlBuilderConfig config) {
         // 达梦 JDBC 对 MERGE 批写入常返回影响行数 0，导致全量同步误判失败；全量 INSERT 使用标准 INSERT 语句
         return SqlBuilderEnum.INSERT.getSqlBuilder().buildSql(config);
@@ -230,5 +286,28 @@ public final class DmConnector extends AbstractDatabaseConnector {
     @Override
     public SchemaResolver getSchemaResolver() {
         return schemaResolver;
+    }
+
+    private String buildSchemaPrefix(String schema) {
+        if (StringUtil.isNotBlank(schema)) {
+            return buildWithQuotation(schema) + ".";
+        }
+        return StringUtil.EMPTY;
+    }
+
+    private List<Field> distinctColumns(List<Field> column) {
+        Set<String> mark = new HashSet<>();
+        List<Field> fields = new ArrayList<>();
+        if (CollectionUtils.isEmpty(column)) {
+            return fields;
+        }
+        for (Field c : column) {
+            String name = c.getName();
+            if (StringUtil.isNotBlank(name) && !mark.contains(name)) {
+                fields.add(c);
+                mark.add(name);
+            }
+        }
+        return fields;
     }
 }

@@ -3,6 +3,7 @@
  */
 package org.dbcbc.web.controller.index;
 
+import database.ddl.transfer.bean.MigrationIssue;
 import database.ddl.transfer.bean.MigrationSummary;
 import database.ddl.transfer.bean.ObjectCounts;
 import database.ddl.transfer.object.DbObjectType;
@@ -95,7 +96,17 @@ public class DdlMigrationController extends BaseController {
         final MigrationSummary[] holder = new MigrationSummary[1];
         DdlMigrationLogCapture.CaptureResult cap =
                 DdlMigrationLogCapture.runCapturing(() -> holder[0] = ddlMigrationService.transfer(src, tgt));
-        return buildTableResult(cap, holder[0]);
+        RestResult result = buildTableResult(cap, holder[0]);
+        if (cap.getError() == null) {
+            try {
+                String refreshMsg = connectorService.refreshConnectorDatabases(tgt);
+                appendRefreshNotice(result, refreshMsg);
+            } catch (Exception e) {
+                logger.warn("DDL 完成后刷新目标连接库列表失败: {}", e.getMessage(), e);
+                appendRefreshNotice(result, "目标连接库列表自动刷新失败：" + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            }
+        }
+        return result;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -186,10 +197,46 @@ public class DdlMigrationController extends BaseController {
         data.put("logs", logs);
         if (summary != null) {
             data.put("summary", toSummaryMap(summary));
+            appendIssueLogs(logs, summary);
         }
         RestResult r = RestResult.restSuccess(data);
         r.setMessage(summary != null ? summary.formatMessage() : "DDL 表结构迁移已执行完成");
         return r;
+    }
+
+    private static void appendIssueLogs(List<Map<String, String>> logs, MigrationSummary summary) {
+        if (summary.getIssues() == null || summary.getIssues().isEmpty()) {
+            return;
+        }
+        for (MigrationIssue issue : summary.getIssues()) {
+            Map<String, String> row = new LinkedHashMap<>(2);
+            row.put("level", issue.getKind() == MigrationIssue.Kind.TABLE ? "ERROR" : "WARN");
+            row.put("message", (issue.getKind() == MigrationIssue.Kind.TABLE ? "未迁移表：" : "未迁移索引：") + issue.formatBrief());
+            logs.add(row);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void appendRefreshNotice(RestResult result, String refreshMsg) {
+        if (result == null || refreshMsg == null || refreshMsg.isEmpty()) {
+            return;
+        }
+        Object dataObj = result.getData();
+        if (!(dataObj instanceof Map)) {
+            return;
+        }
+        Map<String, Object> data = (Map<String, Object>) dataObj;
+        Object logsObj = data.get("logs");
+        if (logsObj instanceof List) {
+            Map<String, String> row = new LinkedHashMap<>(2);
+            row.put("level", "INFO");
+            row.put("message", "已自动刷新目标连接库列表：" + refreshMsg);
+            ((List<Map<String, String>>) logsObj).add(row);
+        }
+        String msg = result.getMessage();
+        if (msg != null && !msg.isEmpty()) {
+            result.setMessage(msg + "\n已自动刷新目标连接库列表：" + refreshMsg);
+        }
     }
 
     private RestResult buildObjectResult(DdlMigrationLogCapture.CaptureResult cap,
@@ -240,9 +287,21 @@ public class DdlMigrationController extends BaseController {
     }
 
     private static Map<String, Object> toSummaryMap(MigrationSummary summary) {
-        Map<String, Object> map = new LinkedHashMap<>(2);
+        Map<String, Object> map = new LinkedHashMap<>(3);
         map.put("source", toCountsMap(summary.getSource()));
         map.put("target", toCountsMap(summary.getTarget()));
+        if (summary.getIssues() != null && !summary.getIssues().isEmpty()) {
+            List<Map<String, String>> issueRows = new ArrayList<>();
+            for (MigrationIssue issue : summary.getIssues()) {
+                Map<String, String> row = new LinkedHashMap<>(4);
+                row.put("kind", issue.getKind().name());
+                row.put("table", issue.getTableName());
+                row.put("index", issue.getIndexName());
+                row.put("reason", issue.getReason());
+                issueRows.add(row);
+            }
+            map.put("issues", issueRows);
+        }
         return map;
     }
 

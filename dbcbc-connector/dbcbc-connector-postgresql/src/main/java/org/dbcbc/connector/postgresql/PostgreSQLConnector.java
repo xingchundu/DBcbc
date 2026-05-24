@@ -10,6 +10,8 @@ import org.dbcbc.connector.postgresql.validator.PostgreSQLConfigValidator;
 import org.dbcbc.sdk.config.DatabaseConfig;
 import org.dbcbc.sdk.config.SqlBuilderConfig;
 import org.dbcbc.sdk.connector.ConfigValidator;
+import org.dbcbc.sdk.connector.ConnectorInstance;
+import org.dbcbc.sdk.connector.ConnectorServiceContext;
 import org.dbcbc.sdk.connector.database.AbstractDatabaseConnector;
 import org.dbcbc.sdk.connector.database.Database;
 import org.dbcbc.sdk.connector.database.DatabaseConnectorInstance;
@@ -44,6 +46,19 @@ public final class PostgreSQLConnector extends AbstractDatabaseConnector {
     @Override
     public String getConnectorType() {
         return "PostgreSQL";
+    }
+
+    @Override
+    public ConnectorInstance connect(DatabaseConfig config, ConnectorServiceContext context) {
+        String catalog = context.getCatalog();
+        String schema = context.getSchema();
+        if (StringUtil.isNotBlank(catalog)) {
+            DatabaseConfig effectiveConfig = copyDatabaseConfig(config);
+            effectiveConfig.setDatabase(catalog);
+            effectiveConfig.setUrl(resolveJdbcUrl(config, catalog));
+            return new DatabaseConnectorInstance(effectiveConfig, catalog, schema);
+        }
+        return new DatabaseConnectorInstance(config, catalog, schema);
     }
 
     @Override
@@ -148,6 +163,44 @@ public final class PostgreSQLConnector extends AbstractDatabaseConnector {
             url.append(database);
         }
         return url.toString();
+    }
+
+    /**
+     * PostgreSQL 需通过 JDBC URL 中的库名连接目标库，setCatalog 无法可靠切换物理库。
+     */
+    private String resolveJdbcUrl(DatabaseConfig config, String database) {
+        if (StringUtil.isNotBlank(config.getHost()) && config.getPort() > 0) {
+            return buildJdbcUrl(config, database);
+        }
+        String url = config.getUrl();
+        if (StringUtil.isBlank(url) || StringUtil.isBlank(database)) {
+            return url;
+        }
+        int slash = url.lastIndexOf('/');
+        if (slash < 0) {
+            return url;
+        }
+        int queryIndex = url.indexOf('?', slash);
+        String suffix = queryIndex > 0 ? url.substring(queryIndex) : "";
+        return url.substring(0, slash + 1) + database + suffix;
+    }
+
+    private DatabaseConfig copyDatabaseConfig(DatabaseConfig config) {
+        DatabaseConfig copy = new DatabaseConfig();
+        copy.setDriverClassName(config.getDriverClassName());
+        copy.setHost(config.getHost());
+        copy.setPort(config.getPort());
+        copy.setUsername(config.getUsername());
+        copy.setPassword(config.getPassword());
+        copy.setMaxActive(config.getMaxActive());
+        copy.setKeepAlive(config.getKeepAlive());
+        copy.setDatabase(config.getDatabase());
+        copy.setServiceName(config.getServiceName());
+        copy.setUrl(config.getUrl());
+        copy.setConnectorType(config.getConnectorType());
+        copy.setProperties(config.getProperties());
+        copy.setExtInfo(config.getExtInfo());
+        return copy;
     }
 
     @Override

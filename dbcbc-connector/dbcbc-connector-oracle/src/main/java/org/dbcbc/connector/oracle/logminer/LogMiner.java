@@ -129,8 +129,8 @@ public class LogMiner {
             conn = DatabaseUtil.getConnection(driverClassName, url, username, password);
             LogMinerHelper.setSessionParameter(conn);
             int version = conn.getMetaData().getDatabaseMajorVersion();
-            // 19支持cdb模式
-            if (version == 19) {
+            // 12c+ 可能为 CDB 模式；检测/切换失败不阻断 LogMiner 启动
+            if (version >= 12) {
                 LogMinerHelper.setSessionContainerIfCdbMode(conn);
             }
             // 低于10不支持

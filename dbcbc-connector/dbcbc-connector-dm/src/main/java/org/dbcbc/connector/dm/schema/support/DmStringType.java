@@ -36,6 +36,14 @@ public final class DmStringType extends StringType {
     }
 
     @Override
+    protected Object convert(Object val, Field field) {
+        if (val instanceof String) {
+            return val;
+        }
+        return super.convert(val, field);
+    }
+
+    @Override
     protected String merge(Object val, Field field) {
         if (val instanceof byte[]) {
             return new String((byte[]) val, StandardCharsets.UTF_8);

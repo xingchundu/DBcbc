@@ -130,10 +130,43 @@ public class PostgreSqlGenerator extends Generator {
 		}
 		StringBuilder stringBuilder = new StringBuilder("");
 		if (!flag) {
-			stringBuilder.append("CREATE DATABASE ").append("\"").append(dataBaseDefine.getCatalog()).append("\" ").append("ENCODING '").append(dataBaseDefine.getCharacterSetDataBase()).append("';");
+			stringBuilder.append("CREATE DATABASE ").append("\"").append(dataBaseDefine.getCatalog()).append("\" ")
+					.append("ENCODING '").append(resolvePostgreSqlEncoding(dataBaseDefine.getCharacterSetDataBase())).append("';");
 		}
 
 		return stringBuilder.toString();
+	}
+
+	/**
+	 * MySQL 源库字符集（如 utf8mb3、utf8mb4）需映射为 PostgreSQL 合法 ENCODING 名（如 UTF8）。
+	 */
+	private String resolvePostgreSqlEncoding(String characterSet) {
+		if (StringUtil.isBlank(characterSet)) {
+			return "UTF8";
+		}
+		String lower = characterSet.trim().toLowerCase();
+		if (lower.contains("utf8") || lower.contains("utf-8")) {
+			return "UTF8";
+		}
+		if (lower.contains("gbk") || lower.contains("gb2312") || lower.contains("gb18030")) {
+			return "UTF8";
+		}
+		if (lower.contains("latin1") || lower.equals("cp1252") || lower.equals("iso88591")) {
+			return "LATIN1";
+		}
+		if (lower.equals("sql_ascii")) {
+			return "SQL_ASCII";
+		}
+		if (lower.equals("euc_cn") || lower.equals("euc_jp") || lower.equals("euc_kr") || lower.equals("euc_tw")) {
+			return lower.toUpperCase();
+		}
+		String upper = characterSet.trim().toUpperCase();
+		if (upper.equals("UTF8") || upper.equals("LATIN1") || upper.equals("SQL_ASCII")
+				|| upper.startsWith("EUC_") || upper.startsWith("WIN")) {
+			return upper;
+		}
+		logger.warn("未识别的字符集 {}，CREATE DATABASE 将使用 UTF8", characterSet);
+		return "UTF8";
 	}
 
 	@Override

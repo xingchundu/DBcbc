@@ -8,6 +8,7 @@ import database.ddl.transfer.consts.DataBaseTypeProperties;
 import database.ddl.transfer.bean.DBSettings;
 import database.ddl.transfer.bean.DataBaseDefine;
 import database.ddl.transfer.bean.IndexDefinition;
+import database.ddl.transfer.bean.MigrationIssue;
 import database.ddl.transfer.bean.Table;
 import database.ddl.transfer.factory.analyse.Analyser;
 import database.ddl.transfer.factory.analyse.AnalyserFactory;
@@ -49,6 +50,9 @@ public abstract class Generator {
 	 */
 	protected DBSettings targetDBSettings;
 
+	/** 迁移过程中未能完成的表/索引及原因 */
+	private final List<MigrationIssue> migrationIssues = new ArrayList<>();
+
 	protected Logger logger = LoggerFactory.getLogger(this.getClass().getName());
 
 	public Generator(Connection connection, DataBaseDefine sourceDataBaseDefine, DBSettings targetDBSettings) {
@@ -80,6 +84,45 @@ public abstract class Generator {
 			connection = DriverManager.getConnection(url, targetDBSettings.getUserName(), targetDBSettings.getUserPassword());
 		}
 		this.createTable(sourceDataBaseDefine.getTablesMap().values());
+	}
+
+	public List<MigrationIssue> getMigrationIssues() {
+		return new ArrayList<>(migrationIssues);
+	}
+
+	protected void recordTableIssue(String tableName, String reason) {
+		if (StringUtil.isBlank(tableName)) {
+			return;
+		}
+		migrationIssues.add(MigrationIssue.table(tableName, reason));
+	}
+
+	protected void recordIndexIssue(String tableName, String indexName, String reason) {
+		if (StringUtil.isBlank(tableName)) {
+			return;
+		}
+		migrationIssues.add(MigrationIssue.index(tableName, indexName, reason));
+	}
+
+	private boolean hasTableIssue(String tableName) {
+		for (MigrationIssue issue : migrationIssues) {
+			if (issue.getKind() == MigrationIssue.Kind.TABLE
+					&& tableName.equalsIgnoreCase(issue.getTableName())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean hasIndexIssue(String tableName, String indexName) {
+		for (MigrationIssue issue : migrationIssues) {
+			if (issue.getKind() == MigrationIssue.Kind.INDEX
+					&& tableName.equalsIgnoreCase(issue.getTableName())
+					&& indexName != null && indexName.equalsIgnoreCase(issue.getIndexName())) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -143,33 +186,40 @@ public abstract class Generator {
 	protected void createTable(Collection<Table> sourceTableDefines) throws SQLException {
 		Analyser analyser = AnalyserFactory.getInstance(connection);
 		DataBaseDefine targetDataBaseDefine = analyser.getDataBaseDefine(connection);
-		Set<String> targetTableNames = targetDataBaseDefine.getTablesMap().keySet();
+		Set<String> targetTableNames = new HashSet<>(targetDataBaseDefine.getTablesMap().keySet());
 		if (sourceTableDefines != null && !sourceTableDefines.isEmpty()) {
 			String tableDDL = null;
 			List<String> modifiedColumnDDLList = new LinkedList<>();
 			try (Statement statement = this.connection.createStatement();) {
 				for (Table sourceTable : sourceTableDefines) {
 					String tableName = sourceTable.getTableName();
-					if(!targetTableNames.contains(tableName)) {
-						tableDDL = this.getTableDDL(sourceTable);
-						executeDdlStatements(statement, tableDDL);
-						logger.info("表{}创建成功", tableName);
-						// 新表落库后,按源端抽取的 secondaryIndexes 在目标端建二级索引(失败仅告警,不阻塞整库迁移)
-						this.executeSecondaryIndexStatements(statement, sourceTable, tableName);
-					}else {
-						Table targetTable = targetDataBaseDefine.getTablesMap().get(tableName);
-						modifiedColumnDDLList = this.getModifiedColumnDDL(sourceTable, targetTable);
-						for (String modifiedColumnDDL : modifiedColumnDDLList) {
-							executeDdlStatements(statement, modifiedColumnDDL);
-							logger.info("表{}字段修改成功,执行DDL：{}", tableName, modifiedColumnDDL);
+					try {
+						if (!targetTableNames.contains(tableName)) {
+							tableDDL = this.getTableDDL(sourceTable);
+							executeDdlStatements(statement, tableDDL);
+							logger.info("表{}创建成功", tableName);
+							targetTableNames.add(tableName);
+							this.executeSecondaryIndexStatements(statement, sourceTable, tableName);
+						} else {
+							Table targetTable = targetDataBaseDefine.getTablesMap().get(tableName);
+							modifiedColumnDDLList = this.getModifiedColumnDDL(sourceTable, targetTable);
+							for (String modifiedColumnDDL : modifiedColumnDDLList) {
+								executeDdlStatements(statement, modifiedColumnDDL);
+								logger.info("表{}字段修改成功,执行DDL：{}", tableName, modifiedColumnDDL);
+							}
+							this.executeAddPrimaryKeyIfMissing(statement, sourceTable, targetTable, tableName);
+							this.executeSecondaryIndexStatementsForMissing(statement, sourceTable, targetTable, tableName);
 						}
-						this.executeAddPrimaryKeyIfMissing(statement, sourceTable, targetTable, tableName);
-						// 已存在表: 按索引名(小写)对比目标库已抽取的 secondaryIndexes,仅补建缺失项
-						this.executeSecondaryIndexStatementsForMissing(statement, sourceTable, targetTable, tableName);
+					} catch (Throwable e) {
+						String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+						if (!hasTableIssue(tableName)) {
+							recordTableIssue(tableName, reason);
+						}
+						logger.error("表{}创建或修改失败：{}", tableName, reason, e);
 					}
 				}
 			} catch (Throwable e) {
-				logger.error(String.format("表创建或修改失败，DDL：%s", StringUtil.isBlank(tableDDL) ? modifiedColumnDDLList.toString() : tableDDL), e);
+				logger.error("表结构迁移会话异常", e);
 			}
 
 		}
@@ -180,7 +230,8 @@ public abstract class Generator {
 	 */
 	private void executeDdlStatements(Statement statement, String ddl) throws SQLException {
 		if (targetDBSettings.getDataBaseType().equals(DataBaseType.ORACLE)
-				|| targetDBSettings.getDataBaseType().equals(DataBaseType.DM)) {
+				|| targetDBSettings.getDataBaseType().equals(DataBaseType.DM)
+				|| targetDBSettings.getDataBaseType().equals(DataBaseType.POSTGRESQL)) {
 			for (String singleSql : ddl.split(";")) {
 				if (StringUtil.isBlank(singleSql)) {
 					continue;
@@ -209,6 +260,9 @@ public abstract class Generator {
 			String sql = IndexDdlFactory.buildCreateIndex(target, source, sourceTable, id);
 			if (!StringUtil.isBlank(sql)) {
 				r.add(sql);
+			} else if (id.getIndexName() != null && !hasIndexIssue(sourceTable.getTableName(), id.getIndexName())) {
+				recordIndexIssue(sourceTable.getTableName(), id.getIndexName(),
+						"目标方言不支持或含不可迁移列(如Oracle函数索引/系统列)");
 			}
 		}
 		return r;
@@ -245,6 +299,9 @@ public abstract class Generator {
 			String sql = IndexDdlFactory.buildCreateIndex(target, source, sourceTable, id);
 			if (!StringUtil.isBlank(sql)) {
 				r.add(sql);
+			} else if (!hasIndexIssue(sourceTable.getTableName(), id.getIndexName())) {
+				recordIndexIssue(sourceTable.getTableName(), id.getIndexName(),
+						"目标方言不支持或含不可迁移列(如Oracle函数索引/系统列)");
 			}
 		}
 		return r;
@@ -288,7 +345,12 @@ public abstract class Generator {
 				}
 				logger.info("表{} 二级索引已执行: {}", tableName, indexSql);
 			} catch (Throwable ix) {
-				logger.warn("表{} 二级索引未创建(可能已存在或方言限制): {} — {}", tableName, indexSql, ix.getMessage());
+				String indexName = extractIndexName(indexSql);
+				String reason = ix.getMessage() != null ? ix.getMessage() : ix.getClass().getSimpleName();
+				if (!hasIndexIssue(tableName, indexName)) {
+					recordIndexIssue(tableName, indexName, reason);
+				}
+				logger.warn("表{} 二级索引未创建(可能已存在或方言限制): {} — {}", tableName, indexSql, reason);
 			}
 		}
 	}
@@ -314,6 +376,24 @@ public abstract class Generator {
 	 */
 	protected String getAddPrimaryKeyDDL(Table sourceTable, Table targetTable) {
 		return null;
+	}
+
+	private static String extractIndexName(String indexSql) {
+		if (StringUtil.isBlank(indexSql)) {
+			return null;
+		}
+		String lower = indexSql.toLowerCase();
+		int pos = lower.indexOf("index");
+		if (pos < 0) {
+			return null;
+		}
+		String tail = indexSql.substring(pos + 5).trim();
+		if (tail.startsWith("\"")) {
+			int end = tail.indexOf('"', 1);
+			return end > 0 ? tail.substring(1, end) : null;
+		}
+		int space = tail.indexOf(' ');
+		return space > 0 ? tail.substring(0, space) : tail;
 	}
 
 	/**

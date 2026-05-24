@@ -2,9 +2,11 @@ package database.ddl.transfer;
 
 import database.ddl.transfer.bean.DBSettings;
 import database.ddl.transfer.bean.DataBaseDefine;
+import database.ddl.transfer.bean.MigrationIssue;
 import database.ddl.transfer.bean.MigrationSummary;
 import database.ddl.transfer.bean.ObjectCounts;
 import database.ddl.transfer.bean.Table;
+import database.ddl.transfer.bean.IndexDefinition;
 import database.ddl.transfer.consts.DataBaseType;
 import database.ddl.transfer.consts.DataBaseTypeProperties;
 import database.ddl.transfer.factory.analyse.Analyser;
@@ -21,7 +23,13 @@ import database.ddl.transfer.object.extractor.AbstractObjectExtractor;
 import database.ddl.transfer.object.extractor.ObjectExtractorFactory;
 import database.ddl.transfer.object.migrator.AbstractObjectMigrator;
 import database.ddl.transfer.object.migrator.ObjectMigratorFactory;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,13 +91,16 @@ public final class Transfer {
             generator.generateStructure();
             logger.info("目标数据库结构构造完成");
 
+            List<MigrationIssue> issues = new ArrayList<>(generator.getMigrationIssues());
             ObjectCounts targetCounts;
             DBSettings verifyTargetSettings = resolveTargetVerifySettings(targetDB, dataBaseDefine);
             try (Connection verifyTarget = getConnection(verifyTargetSettings)) {
                 Analyser targetAnalyser = AnalyserFactory.getInstance(verifyTarget);
-                targetCounts = targetAnalyser.countTablesAndSecondaryIndexes(verifyTarget);
+                DataBaseDefine targetDefine = targetAnalyser.getDataBaseDefine(verifyTarget);
+                targetCounts = countFromDefine(targetDefine);
+                appendDiffIssues(dataBaseDefine, targetDefine, issues);
             }
-            MigrationSummary summary = new MigrationSummary(sourceCounts, targetCounts);
+            MigrationSummary summary = new MigrationSummary(sourceCounts, targetCounts, issues);
             logger.info(summary.formatMessage());
             return summary;
         }
@@ -129,34 +140,108 @@ public final class Transfer {
     }
 
     /**
-     * Oracle / 达梦目标：DDL 在源库同名 schema 用户下执行，汇总统计也须用该用户连接（SYSDBA 看不到普通用户下的索引）。
+     * 目标库校验连接：Oracle/DM 切 schema 用户；PostgreSQL/MySQL/SqlServer 切到源库同名 database（DDL 新建库后须与迁移会话一致）。
      */
     private static DBSettings resolveTargetVerifySettings(DBSettings targetDB, DataBaseDefine sourceDefine) {
         if (targetDB == null || sourceDefine == null || StringUtil.isBlank(sourceDefine.getCatalog())) {
             return targetDB;
         }
         DataBaseType targetType = targetDB.getDataBaseType();
-        if (targetType != DataBaseType.ORACLE && targetType != DataBaseType.DM) {
-            return targetDB;
+        DBSettings verify = copySettings(targetDB);
+        if (targetType == DataBaseType.ORACLE || targetType == DataBaseType.DM) {
+            String schemaUser = sourceDefine.getCatalog().toUpperCase();
+            if (!schemaUser.equalsIgnoreCase(targetDB.getUserName())) {
+                verify.setUserName(schemaUser);
+                if (targetType == DataBaseType.DM) {
+                    verify.setUserPassword(DataBaseTypeProperties.DM_DEFAULT_USER_PASSWORD);
+                } else {
+                    verify.setUserPassword(sourceDefine.getCatalog());
+                }
+            }
+            return verify;
         }
-        String schemaUser = sourceDefine.getCatalog().toUpperCase();
-        if (schemaUser.equalsIgnoreCase(targetDB.getUserName())) {
-            return targetDB;
-        }
-        DBSettings verify = new DBSettings();
-        verify.setDataBaseType(targetDB.getDataBaseType());
-        verify.setDriverClass(targetDB.getDriverClass());
-        verify.setIpAddress(targetDB.getIpAddress());
-        verify.setPort(targetDB.getPort());
-        verify.setDataBaseName(targetDB.getDataBaseName());
-        verify.setOracleServiceName(targetDB.getOracleServiceName());
-        verify.setUserName(schemaUser);
-        if (targetType == DataBaseType.DM) {
-            verify.setUserPassword(DataBaseTypeProperties.DM_DEFAULT_USER_PASSWORD);
-        } else {
-            verify.setUserPassword(sourceDefine.getCatalog());
+        if (targetType == DataBaseType.POSTGRESQL || targetType == DataBaseType.MYSQL
+                || targetType == DataBaseType.SQLSERVER) {
+            String targetCatalog = sourceDefine.getCatalog();
+            if (!targetCatalog.equalsIgnoreCase(targetDB.getDataBaseName())) {
+                verify.setDataBaseName(targetCatalog);
+            }
         }
         return verify;
+    }
+
+    private static DBSettings copySettings(DBSettings source) {
+        DBSettings verify = new DBSettings();
+        verify.setDataBaseType(source.getDataBaseType());
+        verify.setDriverClass(source.getDriverClass());
+        verify.setIpAddress(source.getIpAddress());
+        verify.setPort(source.getPort());
+        verify.setDataBaseName(source.getDataBaseName());
+        verify.setOracleServiceName(source.getOracleServiceName());
+        verify.setUserName(source.getUserName());
+        verify.setUserPassword(source.getUserPassword());
+        return verify;
+    }
+
+    /** 对比源/目标结构，补充迁移后仍缺失且尚未记录的表与索引 */
+    private static void appendDiffIssues(DataBaseDefine sourceDefine, DataBaseDefine targetDefine,
+            List<MigrationIssue> issues) {
+        if (sourceDefine == null || sourceDefine.getTablesMap() == null) {
+            return;
+        }
+        Map<String, Table> targetTables = targetDefine == null || targetDefine.getTablesMap() == null
+                ? new HashMap<>() : targetDefine.getTablesMap();
+        Set<String> recordedTables = new HashSet<>();
+        Set<String> recordedIndexes = new HashSet<>();
+        for (MigrationIssue issue : issues) {
+            if (issue.getKind() == MigrationIssue.Kind.TABLE) {
+                recordedTables.add(issue.getTableName().toLowerCase());
+            } else if (issue.getIndexName() != null) {
+                recordedIndexes.add(issue.getTableName().toLowerCase() + "\0" + issue.getIndexName().toLowerCase());
+            }
+        }
+        for (Table sourceTable : sourceDefine.getTablesMap().values()) {
+            String tableName = sourceTable.getTableName();
+            if (tableName == null) {
+                continue;
+            }
+            if (!targetTables.containsKey(tableName)) {
+                if (!recordedTables.contains(tableName.toLowerCase())) {
+                    issues.add(MigrationIssue.table(tableName, "目标库中未找到该表(可能建表失败或校验库不一致)"));
+                }
+                continue;
+            }
+            Map<String, IndexDefinition> targetIdx = indexMapForTable(targetTables.get(tableName));
+            if (sourceTable.getSecondaryIndexes() == null) {
+                continue;
+            }
+            for (IndexDefinition idx : sourceTable.getSecondaryIndexes()) {
+                if (idx.getIndexName() == null) {
+                    continue;
+                }
+                String key = tableName.toLowerCase() + "\0" + idx.getIndexName().toLowerCase();
+                if (recordedIndexes.contains(key)) {
+                    continue;
+                }
+                if (!targetIdx.containsKey(idx.getIndexName().toLowerCase())) {
+                    issues.add(MigrationIssue.index(tableName, idx.getIndexName(),
+                            "目标库中未找到该索引(可能创建失败或方言不支持)"));
+                }
+            }
+        }
+    }
+
+    private static Map<String, IndexDefinition> indexMapForTable(Table table) {
+        Map<String, IndexDefinition> map = new LinkedHashMap<>();
+        if (table == null || table.getSecondaryIndexes() == null) {
+            return map;
+        }
+        for (IndexDefinition idx : table.getSecondaryIndexes()) {
+            if (idx.getIndexName() != null) {
+                map.put(idx.getIndexName().toLowerCase(), idx);
+            }
+        }
+        return map;
     }
 
     private static ObjectCounts countFromDefine(DataBaseDefine dataBaseDefine) {
