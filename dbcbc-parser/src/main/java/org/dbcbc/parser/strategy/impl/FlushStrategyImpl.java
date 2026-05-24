@@ -65,9 +65,14 @@ public final class FlushStrategyImpl implements FlushStrategy {
             refreshTotal(metaId, result);
 
             if (!CollectionUtils.isEmpty(result.getFailData())) {
-                logger.error(result.getError().toString());
+                String errorDetail = result.getError().toString();
+                if (StringUtil.isBlank(errorDetail)) {
+                    errorDetail = String.format("共 %d 条写入失败（批处理影响行数为 0 或驱动未返回 SQLException，请检查目标表约束/字段类型）",
+                            result.getFailData().size());
+                }
+                logger.error(errorDetail);
                 LogType logType = LogType.TableGroupLog.FULL_FAILED;
-                logService.log(logType, "%s:%s:%s", result.getTargetTableGroupName(), logType.getMessage(), result.getError().toString());
+                logService.log(logType, "%s:%s:%s", result.getTargetTableGroupName(), logType.getMessage(), errorDetail);
             }
             return;
         }

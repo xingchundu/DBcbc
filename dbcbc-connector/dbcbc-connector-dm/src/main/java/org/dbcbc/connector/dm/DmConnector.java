@@ -6,6 +6,7 @@ import org.dbcbc.connector.dm.schema.DmSchemaResolver;
 import org.dbcbc.connector.dm.validator.DmConfigValidator;
 import org.dbcbc.sdk.config.DatabaseConfig;
 import org.dbcbc.sdk.config.SqlBuilderConfig;
+import org.dbcbc.sdk.enums.SqlBuilderEnum;
 import org.dbcbc.sdk.connector.ConfigValidator;
 import org.dbcbc.sdk.connector.database.AbstractDatabaseConnector;
 import org.dbcbc.sdk.connector.database.Database;
@@ -145,13 +146,8 @@ public final class DmConnector extends AbstractDatabaseConnector {
 
     @Override
     public String buildInsertSql(SqlBuilderConfig config) {
-        MergeContext context = buildMergeContext(config);
-
-        StringBuilder sql = new StringBuilder(config.getDatabase().generateUniqueCode());
-        buildMergeHeader(sql, config, context);
-        buildInsertClause(sql, context);
-
-        return sql.toString();
+        // 达梦 JDBC 对 MERGE 批写入常返回影响行数 0，导致全量同步误判失败；全量 INSERT 使用标准 INSERT 语句
+        return SqlBuilderEnum.INSERT.getSqlBuilder().buildSql(config);
     }
 
     @Override

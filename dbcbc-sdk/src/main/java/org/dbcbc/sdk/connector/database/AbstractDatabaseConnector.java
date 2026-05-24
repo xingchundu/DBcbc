@@ -47,6 +47,7 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -352,18 +353,33 @@ public abstract class AbstractDatabaseConnector extends AbstractConnector implem
         if (null != execute) {
             int batchSize = execute.length;
             for (int i = 0; i < batchSize; i++) {
-                /**
-                 * MySQL返回结果：
-                 * With ON DUPLICATE KEY UPDATE, the affected-rows value per row is 1 if the row is inserted as a new row, 2 if an existing row is updated, and 0 if an existing row is set to its current values.
-                 */
-                if (execute[i] == 1 || execute[i] == 2 || execute[i] == -2) {
+                if (isBatchRowSuccess(execute[i], context)) {
                     result.getSuccessData().add(data.get(i));
                     continue;
                 }
                 result.getFailData().add(data.get(i));
+                appendBatchFailureDetail(result, i, execute[i], context.getEvent());
             }
         }
         return result;
+    }
+
+    /**
+     * 判断批写入单行是否成功。INSERT IGNORE / MERGE(仅 WHEN NOT MATCHED) 时影响行数 0 表示主键已存在跳过，仍视为成功。
+     */
+    protected boolean isBatchRowSuccess(int affectedRows, PluginContext context) {
+        if (isInsert(context.getEvent()) && !context.isForceUpdate()) {
+            return affectedRows >= 0 || affectedRows == Statement.SUCCESS_NO_INFO;
+        }
+        return affectedRows > 0 || affectedRows == Statement.SUCCESS_NO_INFO;
+    }
+
+    private void appendBatchFailureDetail(Result result, int rowIndex, int affectedRows, String event) {
+        if (result.getFailData().size() > 3) {
+            return;
+        }
+        result.getError().append("第").append(rowIndex + 1).append("条批写入影响行数=").append(affectedRows)
+                .append("，事件=").append(event).append(System.lineSeparator());
     }
 
     private void forceUpdate(DatabaseConnectorInstance connectorInstance, PluginContext context, String executeSql, List<Field> fields, String event, List<Map> data, Result result) {

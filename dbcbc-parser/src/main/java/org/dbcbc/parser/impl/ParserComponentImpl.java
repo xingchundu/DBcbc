@@ -245,7 +245,17 @@ public class ParserComponentImpl implements ParserComponent {
                         result.addFailData(w.getFailData());
                         result.getError().append(w.getError());
                     } catch (Exception e) {
-                        logger.error(e.getMessage());
+                        logger.error("全量写入批次异常", e);
+                        synchronized (result) {
+                            if (!CollectionUtils.isEmpty(tmpContext.getTargetList())) {
+                                result.addFailData(tmpContext.getTargetList());
+                            }
+                            String msg = e.getMessage();
+                            if (StringUtil.isBlank(msg)) {
+                                msg = e.getClass().getSimpleName();
+                            }
+                            result.getError().append(msg).append(System.lineSeparator());
+                        }
                     } finally {
                         latch.countDown();
                     }
