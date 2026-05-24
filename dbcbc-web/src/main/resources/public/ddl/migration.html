@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:th="http://www.thymeleaf.org" lang="zh-CN">
+
+
+<div class="form-container">
+  <div class="card-header">
+    <h3 class="card-title text-center">DDL 迁移（表结构 + 数据库对象）</h3>
+  </div>
+  <div class="card-body space-y-4">
+
+    <!-- 简介 -->
+    <p class="text-sm text-gray-600">
+      从<strong>连接管理</strong>中选择源库与目标库，按两阶段执行迁移：
+      <strong>① 先迁移表结构</strong>（建表/补字段），<strong>② 再迁移数据库对象</strong>（存储过程、函数、触发器、包、视图、同义词、序列、Job、权限角色）。<br/>
+      支持路径：<strong>Oracle → PostgreSQL / 达梦 / MySQL</strong>、<strong>SQL Server → PostgreSQL</strong>。
+    </p>
+
+    <!-- 步骤指示器 -->
+    <div class="ddl-steps">
+      <div class="ddl-step active" id="ddlStep1">
+        <div class="step-num">1</div>
+        <div>
+          <div style="font-weight:600">表结构迁移</div>
+          <div style="font-size:11px;opacity:.8">建表 / 补齐字段</div>
+        </div>
+      </div>
+      <div class="ddl-step" id="ddlStep2">
+        <div class="step-num">2</div>
+        <div>
+          <div style="font-weight:600">对象迁移</div>
+          <div style="font-size:11px;opacity:.8">过程 / 函数 / 视图 …</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 连接选择 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium mb-1">源连接</label>
+        <select id="ddlSourceConnector" class="w-full border border-gray-300 rounded px-3 py-2">
+          <option value="">请选择</option>
+          <option th:each="c : ${ddlConnectors}" th:value="${c.id}"
+                  th:attr="data-type=${c.config.connectorType}"
+                  th:text="${c.name + ' (' + c.config.connectorType + ')'}"></option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium mb-1">目标连接</label>
+        <select id="ddlTargetConnector" class="w-full border border-gray-300 rounded px-3 py-2">
+          <option value="">请选择</option>
+          <option th:each="c : ${ddlConnectors}" th:value="${c.id}"
+                  th:attr="data-type=${c.config.connectorType}"
+                  th:text="${c.name + ' (' + c.config.connectorType + ')'}"></option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 迁移路径提示 -->
+    <div id="ddlRouteHint" class="route-hint"></div>
+
+    <!-- ── 阶段一面板 ── -->
+    <div id="ddlPanel1">
+      <div class="text-sm text-gray-600 mb-3">
+        在目标库中创建或补齐表结构及索引（不迁移业务数据）。库不存在时自动创建。<br/>
+        <span class="text-xs text-gray-400">若新建了库，请先点「刷新连接库列表」，再在驱动管理重新选库。</span>
+      </div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="btn btn-default" onclick="doLoader('/connector/list')">
+          <i class="fa fa-database"></i> 连接管理
+        </button>
+        <button type="button" class="btn btn-default" id="ddlRefreshMetaBtn"
+                title="从数据源重新拉取库名（源/目标至少选一个）">
+          <i class="fa fa-refresh"></i> 刷新连接库列表
+        </button>
+        <button type="button" class="btn btn-primary" id="ddlTransferBtn">
+          <i class="fa fa-play"></i> 开始迁移表结构
+        </button>
+      </div>
+    </div>
+
+    <!-- ── 阶段二面板 ── -->
+    <div id="ddlPanel2" style="display:none;">
+      <hr class="my-2"/>
+      <div class="text-sm font-medium mb-2">
+        <i class="fa fa-check-circle text-success"></i>
+        表结构迁移已完成，可继续迁移数据库对象：
+      </div>
+
+      <!-- 对象类型选择 -->
+      <div>
+        <div class="flex justify-between items-center mb-1">
+          <span class="text-sm text-gray-600">选择要迁移的对象类型：</span>
+          <div style="display:flex;gap:8px">
+            <button type="button" class="btn btn-sm btn-default" onclick="ddlSelectAll(true)">全选</button>
+            <button type="button" class="btn btn-sm btn-default" onclick="ddlSelectAll(false)">清空</button>
+          </div>
+        </div>
+        <div class="obj-grid" id="ddlObjGrid">
+          <!-- 由 JS 渲染 -->
+        </div>
+        <div class="text-xs text-gray-400 mt-2">
+          ⚠ 存储过程/函数/触发器跨库迁移为最大努力语法替换，建议人工核查后再执行；Job 和权限仅输出注释说明，需手动执行。
+        </div>
+      </div>
+
+      <div class="flex flex-wrap justify-end gap-2 mt-3">
+        <button type="button" class="btn btn-default" id="ddlBackBtn">
+          <i class="fa fa-arrow-left"></i> 返回表结构迁移
+        </button>
+        <button type="button" class="btn btn-success" id="ddlObjTransferBtn">
+          <i class="fa fa-cogs"></i> 开始迁移对象
+        </button>
+      </div>
+
+      <!-- 对象迁移统计 -->
+      <div id="ddlObjStats" class="stats-row" style="display:none">
+        <div class="stat-box"><div class="stat-n c-ok" id="soSuccess">—</div><div class="stat-l">成功</div></div>
+        <div class="stat-box"><div class="stat-n c-warn" id="soWarn">—</div><div class="stat-l">警告</div></div>
+        <div class="stat-box"><div class="stat-n c-err" id="soFailed">—</div><div class="stat-l">失败</div></div>
+        <div class="stat-box"><div class="stat-n c-skip" id="soSkipped">—</div><div class="stat-l">跳过</div></div>
+        <div class="stat-box"><div class="stat-n" id="soTotal">—</div><div class="stat-l">合计</div></div>
+      </div>
+    </div>
+
+    <!-- 日志输出（两阶段共用） -->
+    <div class="mt-4">
+      <div class="text-sm font-medium mb-1">执行日志</div>
+      <div id="ddlLogOutput"
+           class="max-h-96 overflow-y-auto border border-gray-200 rounded bg-gray-50 p-2 font-mono text-left"
+           style="min-height:120px;">
+        <div class="text-gray-500 text-xs">执行后在此显示日志；ERROR 红色，WARN 蓝色，SUCCESS 绿色。</div>
+      </div>
+    </div>
+
+    <!-- 表结构统计 -->
+    <div id="ddlTableStats" class="stats-row" style="display:none">
+      <div class="stat-box"><div class="stat-n" id="stSrcTbl">—</div><div class="stat-l">源表数</div></div>
+      <div class="stat-box"><div class="stat-n" id="stTgtTbl">—</div><div class="stat-l">目标表数</div></div>
+      <div class="stat-box"><div class="stat-n" id="stSrcIdx">—</div><div class="stat-l">源索引</div></div>
+      <div class="stat-box"><div class="stat-n" id="stTgtIdx">—</div><div class="stat-l">目标索引</div></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ─── 支持的对象类型配置 ───
+var DDL_OBJ_TYPES = [
+  {name:'PROCEDURE', label:'存储过程'},
+  {name:'FUNCTION',  label:'函数'},
+  {name:'TRIGGER',   label:'触发器'},
+  {name:'PACKAGE',   label:'包'},
+  {name:'VIEW',      label:'视图'},
+  {name:'SYNONYM',   label:'同义词'},
+  {name:'SEQUENCE',  label:'序列'},
+  {name:'JOB',       label:'Job/调度任务'},
+  {name:'ROLE_GRANT',label:'权限/角色'}
+];
+
+// 各路径支持迁移的对象类型
+var DDL_ROUTE_OBJ = {
+  'Oracle_PostgreSQL': {
+    label:'Oracle → PostgreSQL',
+    supported:['PROCEDURE','FUNCTION','TRIGGER','VIEW','SYNONYM','SEQUENCE','JOB','ROLE_GRANT'],
+    defaultChecked:['VIEW','SEQUENCE','PROCEDURE','FUNCTION']
+  },
+  'Oracle_DM': {
+    label:'Oracle → 达梦(DM)',
+    supported:['PROCEDURE','FUNCTION','TRIGGER','PACKAGE','VIEW','SYNONYM','SEQUENCE','JOB','ROLE_GRANT'],
+    defaultChecked:['VIEW','SEQUENCE','PROCEDURE','FUNCTION','PACKAGE','TRIGGER','SYNONYM']
+  },
+  'Oracle_MySQL': {
+    label:'Oracle → MySQL',
+    supported:['PROCEDURE','FUNCTION','TRIGGER','VIEW','JOB'],
+    defaultChecked:['VIEW','PROCEDURE','FUNCTION']
+  },
+  'SqlServer_PostgreSQL': {
+    label:'SQL Server → PostgreSQL',
+    supported:['PROCEDURE','FUNCTION','TRIGGER','VIEW','SEQUENCE','JOB','ROLE_GRANT'],
+    defaultChecked:['VIEW','SEQUENCE','PROCEDURE','FUNCTION']
+  }
+};
+
+function ddlGetConnType(selectEl) {
+  var opt = selectEl.options[selectEl.selectedIndex];
+  return opt ? (opt.getAttribute('data-type') || '') : '';
+}
+
+function ddlGetRouteKey() {
+  var src = ddlGetConnType(document.getElementById('ddlSourceConnector'));
+  var tgt = ddlGetConnType(document.getElementById('ddlTargetConnector'));
+  if (!src || !tgt) return null;
+  // Oracle → PostgreSQL
+  if (src==='Oracle'    && tgt==='PostgreSQL') return 'Oracle_PostgreSQL';
+  if (src==='Oracle'    && tgt==='DM')         return 'Oracle_DM';
+  if (src==='Oracle'    && tgt==='MySQL')       return 'Oracle_MySQL';
+  if (src==='SqlServer' && tgt==='PostgreSQL')  return 'SqlServer_PostgreSQL';
+  return null;
+}
+
+function ddlUpdateRouteHint() {
+  var hintEl = document.getElementById('ddlRouteHint');
+  var routeKey = ddlGetRouteKey();
+  if (routeKey && DDL_ROUTE_OBJ[routeKey]) {
+    hintEl.textContent = '✅ 迁移路径：' + DDL_ROUTE_OBJ[routeKey].label + '（支持对象迁移）';
+    hintEl.className = 'route-hint show';
+  } else {
+    var src = ddlGetConnType(document.getElementById('ddlSourceConnector'));
+    var tgt = ddlGetConnType(document.getElementById('ddlTargetConnector'));
+    if (src && tgt) {
+      hintEl.textContent = '⚠ 当前路径（' + src + ' → ' + tgt + '）暂不支持对象迁移，可仅迁移表结构';
+      hintEl.className = 'route-hint show';
+    } else {
+      hintEl.className = 'route-hint';
+    }
+  }
+  ddlRebuildObjGrid();
+}
+
+function ddlRebuildObjGrid() {
+  var grid = document.getElementById('ddlObjGrid');
+  grid.innerHTML = '';
+  var routeKey = ddlGetRouteKey();
+  var route = routeKey ? DDL_ROUTE_OBJ[routeKey] : null;
+  DDL_OBJ_TYPES.forEach(function(t) {
+    var supported = route ? route.supported.indexOf(t.name) >= 0 : false;
+    var checked   = route ? route.defaultChecked.indexOf(t.name) >= 0 : false;
+    var item = document.createElement('div');
+    item.className = 'obj-item' + (checked ? ' checked' : '') + (supported ? '' : ' disabled');
+    item.id = 'objItem_' + t.name;
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = 'objCb_' + t.name;
+    cb.value = t.name;
+    cb.checked = checked && supported;
+    cb.disabled = !supported;
+    cb.addEventListener('change', function() {
+      item.classList.toggle('checked', cb.checked);
+    });
+    item.addEventListener('click', function(e) {
+      if (e.target !== cb && !cb.disabled) {
+        cb.checked = !cb.checked;
+        item.classList.toggle('checked', cb.checked);
+      }
+    });
+    var lbl = document.createElement('label');
+    lbl.htmlFor = 'objCb_' + t.name;
+    lbl.textContent = t.label;
+    lbl.style.cssText = 'cursor:pointer;margin:0;pointer-events:none';
+    item.appendChild(cb);
+    item.appendChild(lbl);
+    grid.appendChild(item);
+  });
+}
+
+function ddlSelectAll(checked) {
+  document.querySelectorAll('#ddlObjGrid input[type=checkbox]:not(:disabled)').forEach(function(cb) {
+    cb.checked = checked;
+    var item = document.getElementById('objItem_' + cb.value);
+    if (item) item.classList.toggle('checked', checked);
+  });
+}
+
+function ddlGetSelectedObjTypes() {
+  var types = [];
+  document.querySelectorAll('#ddlObjGrid input[type=checkbox]:checked:not(:disabled)')
+    .forEach(function(cb){ types.push(cb.value); });
+  return types.join(',');
+}
+
+// ─── 日志渲染 ───
+function ddlRenderLogs(response) {
+  var list    = (response && response.data && response.data.logs)    ? response.data.logs    : [];
+  var summary = (response && response.data && response.data.summary) ? response.data.summary : null;
+  var objRes  = (response && response.data && response.data.objectResult) ? response.data.objectResult : null;
+  var $box = $('#ddlLogOutput');
+  $box.empty();
+  if (!list.length) {
+    $box.append('<div class="text-gray-500 text-xs">暂无日志</div>');
+  }
+  list.forEach(function(row) {
+    var lv  = (row.level || 'INFO').toUpperCase();
+    var msg = row.message || '';
+    var $line = $('<pre class="ddl-log-line whitespace-pre-wrap break-words text-xs leading-snug mb-0.5 border-0 bg-transparent p-0 m-0"></pre>');
+    $line.text(msg);
+    if (lv === 'ERROR' || lv === 'FATAL') $line.addClass('text-error');
+    else if (lv === 'WARN')               $line.addClass('text-info');
+    else if (msg.indexOf('完成') >= 0 || msg.indexOf('成功') >= 0) $line.addClass('text-success font-medium');
+    else                                  $line.addClass('text-gray-800');
+    $box.append($line);
+  });
+  var el = $box.get(0);
+  if (el) el.scrollTop = el.scrollHeight;
+
+  // 表结构统计
+  if (summary && summary.source) {
+    $('#ddlTableStats').show();
+    $('#stSrcTbl').text(summary.source.tables);
+    $('#stTgtTbl').text(summary.target.tables);
+    $('#stSrcIdx').text(summary.source.indexes);
+    $('#stTgtIdx').text(summary.target.indexes);
+  }
+  // 对象迁移统计
+  if (objRes) {
+    $('#ddlObjStats').show();
+    $('#soSuccess').text(objRes.success);
+    $('#soWarn').text(objRes.warn);
+    $('#soFailed').text(objRes.failed);
+    $('#soSkipped').text(objRes.skipped);
+    $('#soTotal').text(objRes.total);
+  }
+}
+
+// ─── 步骤切换 ───
+function ddlShowStep1() {
+  $('#ddlPanel1').show();
+  $('#ddlPanel2').hide();
+  $('#ddlStep1').removeClass('done').addClass('active');
+  $('#ddlStep2').removeClass('active done');
+}
+
+function ddlShowStep2() {
+  $('#ddlPanel1').hide();
+  $('#ddlPanel2').show();
+  $('#ddlStep1').removeClass('active').addClass('done');
+  $('#ddlStep2').addClass('active');
+  ddlRebuildObjGrid();
+}
+
+$(function() {
+  window.backIndexPage = function() { doLoader('/ddl/migration'); };
+
+  // 连接变化时更新路径提示
+  $('#ddlSourceConnector, #ddlTargetConnector').on('change', ddlUpdateRouteHint);
+
+  // 刷新连接库列表
+  $('#ddlRefreshMetaBtn').on('click', function() {
+    var src = $('#ddlSourceConnector').val();
+    var tgt = $('#ddlTargetConnector').val();
+    if (!src && !tgt) { bootGrowl('请至少选择源连接或目标连接', 'warning'); return; }
+    var btn = $(this).prop('disabled', true);
+    doPoster('/ddl/refreshConnectorMeta', {sourceConnectorId: src||'', targetConnectorId: tgt||''}, function(r) {
+      btn.prop('disabled', false);
+      bootGrowl(r.success ? (r.message||'刷新完成') : (r.message||'刷新失败'), r.success ? 'success' : 'danger');
+    });
+  });
+
+  // 阶段一：迁移表结构
+  $('#ddlTransferBtn').on('click', function() {
+    var src = $('#ddlSourceConnector').val();
+    var tgt = $('#ddlTargetConnector').val();
+    if (!src || !tgt)          { bootGrowl('请选择源连接与目标连接', 'warning'); return; }
+    if (src === tgt)           { bootGrowl('源连接与目标连接不能相同', 'warning'); return; }
+    var btn = $(this).prop('disabled', true);
+    $('#ddlLogOutput').html('<div class="text-gray-500 text-xs">阶段一执行中…</div>');
+    $('#ddlTableStats').hide();
+    doPoster('/ddl/transfer', {sourceConnectorId: src, targetConnectorId: tgt}, function(r) {
+      btn.prop('disabled', false);
+      ddlRenderLogs(r);
+      if (r.success) {
+        bootGrowl(r.message || '表结构迁移完成', 'success');
+        // 检查是否支持对象迁移，提示进入阶段二
+        var routeKey = ddlGetRouteKey();
+        if (routeKey && DDL_ROUTE_OBJ[routeKey]) {
+          setTimeout(function() {
+            if (confirm('表结构迁移已完成！是否继续进行【阶段二：数据库对象迁移】？')) {
+              ddlShowStep2();
+            }
+          }, 300);
+        }
+      } else {
+        bootGrowl(r.message || '迁移失败', 'danger');
+      }
+    });
+  });
+
+  // 阶段二返回
+  $('#ddlBackBtn').on('click', ddlShowStep1);
+
+  // 阶段二：迁移对象
+  $('#ddlObjTransferBtn').on('click', function() {
+    var src = $('#ddlSourceConnector').val();
+    var tgt = $('#ddlTargetConnector').val();
+    if (!src || !tgt) { bootGrowl('请选择源连接与目标连接', 'warning'); return; }
+    if (src === tgt)  { bootGrowl('源连接与目标连接不能相同', 'warning'); return; }
+    var types = ddlGetSelectedObjTypes();
+    if (!types) { bootGrowl('请至少选择一种迁移对象类型', 'warning'); return; }
+    var btn = $(this).prop('disabled', true);
+    $('#ddlLogOutput').html('<div class="text-gray-500 text-xs">阶段二执行中，正在提取并迁移数据库对象…</div>');
+    $('#ddlObjStats').hide();
+    doPoster('/ddl/transferObjects',
+      {sourceConnectorId: src, targetConnectorId: tgt, objectTypes: types},
+      function(r) {
+        btn.prop('disabled', false);
+        ddlRenderLogs(r);
+        bootGrowl(r.success ? (r.message||'对象迁移完成') : (r.message||'对象迁移失败'),
+                  r.success ? 'success' : 'danger');
+      }
+    );
+  });
+
+  // 步骤条点击
+  $('#ddlStep1').on('click', function() {
+    if ($(this).hasClass('done') || $(this).hasClass('active')) ddlShowStep1();
+  });
+  $('#ddlStep2').on('click', function() {
+    var src = $('#ddlSourceConnector').val();
+    var tgt = $('#ddlTargetConnector').val();
+    if (!src || !tgt) { bootGrowl('请先选择源连接与目标连接', 'warning'); return; }
+    var routeKey = ddlGetRouteKey();
+    if (!routeKey || !DDL_ROUTE_OBJ[routeKey]) {
+      bootGrowl('当前迁移路径不支持对象迁移', 'warning'); return;
+    }
+    ddlShowStep2();
+  });
+});
+</script>
+</html>

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:th="http://www.thymeleaf.org" lang="zh-CN">
+
+<div class="form-container">
+    <div class="card-header">
+        <h3 class="card-title text-center">添加连接</h3>
+    </div>
+    <div class="card-body">
+        <div class="form-actions mb-4">
+            <button id="connectorSubmitBtn" type="button" class="btn btn-primary">
+                <i class="fa fa-save"></i> 保存
+            </button>
+            <button class="btn btn-outline" onclick="backIndexPage()">
+                <i class="fa fa-reply"></i> 返回
+            </button>
+        </div>
+
+        <form id="connectorAddForm" class="grid">
+            <div class="grid grid-cols-2 mt-4">
+                <div class="form-item">
+                    <label class="form-label">类型</label>
+                    <div class="form-control-area">
+                        <select id="connectorType" name="connectorType" class="form-control">
+                            <option th:each="t,s:${connectorTypes}" th:value="${t}" th:text="${t}"></option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-item">
+                    <label class="form-label">名称<strong class="text-primary">*</strong></label>
+                    <div class="form-control-area">
+                        <input class="form-control" name="name" type="text" maxlength="50" required placeholder="请输入连接名称"/>
+                    </div>
+                </div>
+            </div>
+            <div id="connectorConfig" class="mb-5"></div>
+        </form>
+
+    </div>
+</div>
+
+<script>
+$(document).ready(function() {
+    function changeConfig(selectedValues) {
+        // 初始化完成后，如果有默认选中值，触发加载配置
+        if (selectedValues && selectedValues.length > 0) {
+            const selectedValue = selectedValues[0];
+            const $connectorConfig = $("#connectorConfig");
+            $connectorConfig.html('<div class="loading"><div class="loading-spinner"></div>加载中...</div>');
+            $connectorConfig.load($basePath + "/connector/page/add" + selectedValue, function (response, status) {
+                if (status !== 'success') {
+                    $connectorConfig.html('<div class="empty"><div class="empty-icon"><i class="fa fa-warning"></i></div><div class="empty-text">加载连接失败</div></div>');
+                }
+            });
+        }
+    }
+    $('#connectorType').dbSelect({
+        type: 'single',
+        onSelect: changeConfig,
+        onReady: changeConfig
+    });
+
+    // 绑定保存按钮事件
+    $('#connectorSubmitBtn').off('click').on('click', function () {
+        const $form = $("#connectorAddForm");
+        // 验证表单
+        if (validateForm($form)) {
+            // 显示提交状态
+            const submitBtn = $(this);
+            const originalText = submitBtn.html();
+            submitBtn.html('<i class="fa fa-spinner fa-spin"></i> 保存中...').prop('disabled', true);
+            $.ajax({
+                url: $basePath + "/connector/add",
+                type: "POST",
+                data: $form.serializeJson(),
+                timeout: 30000,
+                success: function (response) {
+                    submitBtn.html(originalText).prop('disabled', false);
+                    if (response.success === true) {
+                        const connectionError = response.data && response.data.connectionError;
+                        if (connectionError) {
+                            bootGrowl("保存成功，但连接失败：" + connectionError, "warning");
+                        } else {
+                            bootGrowl("保存成功!", "success");
+                        }
+                        backIndexPage();
+                    } else {
+                        bootGrowl(response.message, "danger");
+                    }
+                },
+                error: function (xhr, status) {
+                    submitBtn.html(originalText).prop('disabled', false);
+                    if (status === "timeout") {
+                        bootGrowl("保存请求超时（30秒），请稍后在列表中查看连接状态", "warning");
+                        backIndexPage();
+                    } else {
+                        doErrorResponse(xhr, status);
+                    }
+                }
+            });
+        }
+    });
+})
+</script>
+
+</html>

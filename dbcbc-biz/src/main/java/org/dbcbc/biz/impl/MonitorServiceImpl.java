@@ -1,0 +1,366 @@
+/**
+ * DBSyncer Copyright 2020-2023 All Rights Reserved.
+ */
+package org.dbcbc.biz.impl;
+
+import org.dbcbc.biz.DataSyncService;
+import org.dbcbc.biz.MonitorService;
+import org.dbcbc.biz.SystemConfigService;
+import org.dbcbc.biz.enums.BufferActuatorMetricEnum;
+import org.dbcbc.biz.enums.MetricEnum;
+import org.dbcbc.biz.metric.MetricDetailFormatter;
+import org.dbcbc.biz.metric.MetricGroupProcessor;
+import org.dbcbc.biz.metric.impl.DoubleRoundMetricDetailFormatter;
+import org.dbcbc.biz.metric.impl.ValueMetricDetailFormatter;
+import org.dbcbc.biz.model.AppReportMetric;
+import org.dbcbc.biz.model.DashboardMetric;
+import org.dbcbc.biz.model.MetricResponse;
+import org.dbcbc.biz.vo.DataVO;
+import org.dbcbc.biz.vo.LogVO;
+import org.dbcbc.biz.vo.MetaVO;
+import org.dbcbc.biz.vo.MetricResponseVO;
+import org.dbcbc.common.model.Paging;
+import org.dbcbc.common.scheduled.ScheduledTaskJob;
+import org.dbcbc.common.scheduled.ScheduledTaskService;
+import org.dbcbc.common.util.CollectionUtils;
+import org.dbcbc.common.util.JsonUtil;
+import org.dbcbc.common.util.NumberUtil;
+import org.dbcbc.common.util.StringUtil;
+import org.dbcbc.parser.LogService;
+import org.dbcbc.parser.LogType;
+import org.dbcbc.parser.ProfileComponent;
+import org.dbcbc.parser.enums.MetaEnum;
+import org.dbcbc.parser.model.Mapping;
+import org.dbcbc.parser.model.Meta;
+import org.dbcbc.sdk.constant.ConfigConstant;
+import org.dbcbc.sdk.enums.FilterEnum;
+import org.dbcbc.sdk.enums.ModelEnum;
+import org.dbcbc.sdk.enums.StorageEnum;
+import org.dbcbc.sdk.filter.BooleanFilter;
+import org.dbcbc.sdk.filter.FieldResolver;
+import org.dbcbc.sdk.filter.Query;
+import org.dbcbc.sdk.filter.impl.LongFilter;
+import org.dbcbc.sdk.storage.StorageService;
+import org.dbcbc.storage.enums.StorageDataStatusEnum;
+
+import org.apache.lucene.index.IndexableField;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeanUtils;
+import org.springframework.stereotype.Service;
+import org.springframework.util.Assert;
+
+import javax.annotation.PostConstruct;
+import javax.annotation.Resource;
+
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+/**
+ * @Author AE86
+ * @Version 1.0.0
+ * @Date 2020-04-27 10:20
+ */
+@Service
+public class MonitorServiceImpl extends BaseServiceImpl implements MonitorService, ScheduledTaskJob {
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    @Resource
+    private MetricReporter metricReporter;
+
+    @Resource
+    private ProfileComponent profileComponent;
+
+    @Resource
+    private DataSyncService dataSyncService;
+
+    @Resource
+    private ScheduledTaskService scheduledTaskService;
+
+    @Resource
+    private StorageService storageService;
+
+    @Resource
+    private LogService logService;
+
+    @Resource
+    private SystemConfigService systemConfigService;
+
+    @Resource
+    private MetricGroupProcessor metricGroupProcessor;
+
+    private final Map<String, MetricDetailFormatter> metricMap = new ConcurrentHashMap<>();
+
+    private MetricResponse systemInfo;
+
+    @PostConstruct
+    private void init() {
+        metricMap.putIfAbsent(BufferActuatorMetricEnum.GENERAL.getCode(), new ValueMetricDetailFormatter());
+        metricMap.putIfAbsent(BufferActuatorMetricEnum.STORAGE.getCode(), new ValueMetricDetailFormatter());
+        metricMap.putIfAbsent(MetricEnum.THREADS_LIVE.getCode(), new DoubleRoundMetricDetailFormatter());
+        metricMap.putIfAbsent(MetricEnum.THREADS_PEAK.getCode(), new DoubleRoundMetricDetailFormatter());
+        // metricMap.putIfAbsent(MetricEnum.GC_PAUSE.getCode(), new GCMetricDetailFormatter());
+        metricMap.putIfAbsent(MetricEnum.SYSTEM_ENV.getCode(), vo-> {
+            // 操作系统
+            String osName = System.getProperty("os.name");
+            // 架构
+            vo.setDetail(String.format("%s %s %s", osName, System.getProperty("os.arch"), System.getProperty("os.version")));
+        });
+        systemInfo = new MetricResponse();
+        systemInfo.setCode(MetricEnum.SYSTEM_ENV.getCode());
+        systemInfo.setGroup(MetricEnum.SYSTEM_ENV.getGroup());
+
+        // 间隔10分钟预警
+        scheduledTaskService.start("0 */10 * * * ?", this);
+    }
+
+    @Override
+    public List<MetaVO> getMetaAll() {
+        return profileComponent.getMetaAll().stream().map(this::convertMeta2Vo).sorted(Comparator.comparing(MetaVO::getUpdateTime).reversed()).collect(Collectors.toList());
+    }
+
+    @Override
+    public MetaVO getMetaVo(String metaId) {
+        Meta meta = profileComponent.getMeta(metaId);
+        Assert.notNull(meta, "The meta is null.");
+
+        return convertMeta2Vo(meta);
+    }
+
+    @Override
+    public String getDefaultMetaId(Map<String, String> params) {
+        String id = params.get(ConfigConstant.CONFIG_MODEL_ID);
+        return getDefaultMetaId(id);
+    }
+
+    @Override
+    public Paging queryData(Map<String, String> params) {
+        String id = params.get(ConfigConstant.CONFIG_MODEL_ID);
+        int pageNum = NumberUtil.toInt(params.get("pageNum"), 1);
+        int pageSize = NumberUtil.toInt(params.get("pageSize"), 10);
+        String error = params.get(ConfigConstant.DATA_ERROR);
+        String status = params.get("status");
+
+        Paging paging = queryData(getDefaultMetaId(id), pageNum, pageSize, error, status);
+        List<Map> data = (List<Map>) paging.getData();
+        List<DataVO> list = new ArrayList<>();
+        for (Map row : data) {
+            try {
+                DataVO dataVo = convert2Vo(row, DataVO.class);
+                Map binlogData = dataSyncService.getBinlogData(row, true);
+                dataVo.setJson(JsonUtil.objToJsonSafe(binlogData));
+                list.add(dataVo);
+            } catch (Exception e) {
+                logger.error(e.getLocalizedMessage(), e);
+            }
+        }
+        paging.setData(list);
+        return paging;
+    }
+
+    @Override
+    public String clearData(String id) {
+        Assert.hasText(id, "驱动不存在.");
+        Meta meta = profileComponent.getMeta(id);
+        meta.getFail().getAndSet(0);
+        // 让定时任务触发更新meta
+        meta.setUpdateTime(Instant.now().toEpochMilli());
+        Mapping mapping = profileComponent.getMapping(meta.getMappingId());
+        String model = ModelEnum.getModelEnum(mapping.getModel()).getName();
+        LogType.MappingLog log = LogType.MappingLog.CLEAR_DATA;
+        logService.log(log, "%s:%s(%s)", log.getMessage(), mapping.getName(), model);
+        storageService.clear(StorageEnum.DATA, id);
+        return "清空同步数据成功";
+    }
+
+    @Override
+    public Paging queryLog(Map<String, String> params) {
+        int pageNum = NumberUtil.toInt(params.get("pageNum"), 1);
+        int pageSize = NumberUtil.toInt(params.get("pageSize"), 10);
+        String json = params.get(ConfigConstant.CONFIG_MODEL_JSON);
+        Query query = new Query(pageNum, pageSize);
+        if (StringUtil.isNotBlank(json)) {
+            query.addFilter(ConfigConstant.CONFIG_MODEL_JSON, json, true);
+        }
+        query.setType(StorageEnum.LOG);
+        Paging paging = storageService.query(query);
+        List<Map> data = (List<Map>) paging.getData();
+        paging.setData(data.stream().map(m->convert2Vo(m, LogVO.class)).collect(Collectors.toList()));
+        return paging;
+    }
+
+    @Override
+    public String clearLog() {
+        storageService.clear(StorageEnum.LOG, null);
+        return "清空日志成功";
+    }
+
+    @Override
+    public void deleteExpiredDataAndLog() {
+        deleteExpiredData();
+        deleteExpiredLog();
+    }
+
+    @Override
+    public List<StorageDataStatusEnum> getStorageDataStatusEnumAll() {
+        return profileComponent.getStorageDataStatusEnumAll();
+    }
+
+    @Override
+    public AppReportMetric queryAppMetric(List<MetricResponse> metrics) {
+        AppReportMetric app = metricReporter.getAppReportMetric();
+        metrics.add(systemInfo);
+        // 系统指标
+        metrics.addAll(metricReporter.getMetricInfo());
+        // 合并分组显示
+        app.setMetrics(metricGroupProcessor.process(metricResponseToVo(metrics)));
+        return app;
+    }
+
+    @Override
+    public DashboardMetric queryDashboardMetric() {
+        return metricReporter.getMappingReportMetric();
+    }
+
+    @Override
+    public Paging<MetricResponse> queryActuator(Map<String, String> params) {
+        int pageNum = NumberUtil.toInt(params.get("pageNum"), 1);
+        int pageSize = NumberUtil.toInt(params.get("pageSize"), 10);
+        String metaId = params.get(ConfigConstant.CONFIG_MODEL_ID);
+        String name = params.get(ConfigConstant.CONFIG_MODEL_NAME);
+        return metricReporter.queryActuator(metaId, name, pageNum, pageSize);
+    }
+
+    @Override
+    public void run() {
+        // 预警：驱动出现失败记录，发送通知消息
+        List<Meta> metaAll = profileComponent.getMetaAll();
+        if (CollectionUtils.isEmpty(metaAll)) {
+            return;
+        }
+
+        StringBuilder content = new StringBuilder();
+        metaAll.forEach(meta-> {
+            // 统计运行中和失败数
+            if (MetaEnum.isRunning(meta.getState()) && meta.getFail().get() > 0) {
+                writeMappingReport(meta, content);
+            }
+        });
+
+        String msg = content.toString();
+        if (StringUtil.isNotBlank(msg)) {
+            sendNotifyMessage("同步失败", msg);
+        }
+    }
+
+    private void writeMappingReport(Meta meta, StringBuilder content) {
+        Mapping mapping = profileComponent.getMapping(meta.getMappingId());
+        if (null != mapping) {
+            ModelEnum modelEnum = ModelEnum.getModelEnum(mapping.getModel());
+            content.append("<p>");
+            content.append(String.format("%s(%s) 失败:%s, 成功:%s", mapping.getName(), modelEnum.getName(), meta.getFail(), meta.getSuccess()));
+            if (ModelEnum.FULL == modelEnum) {
+                content.append(String.format(", 总数:%s", meta.getTotal()));
+            }
+            content.append("<p>");
+        }
+    }
+
+    private Paging queryData(String metaId, int pageNum, int pageSize, String error, String status) {
+        // 没有驱动
+        if (StringUtil.isBlank(metaId)) {
+            return new Paging(pageNum, pageSize);
+        }
+        Query query = new Query(pageNum, pageSize);
+        Map<String, FieldResolver> fieldResolvers = new ConcurrentHashMap<>();
+        fieldResolvers.put(ConfigConstant.BINLOG_DATA, (FieldResolver<IndexableField>) field->field.binaryValue().bytes);
+        query.setFieldResolverMap(fieldResolvers);
+
+        // 查询异常信息
+        if (StringUtil.isNotBlank(error)) {
+            query.addFilter(ConfigConstant.DATA_ERROR, error, true);
+        }
+        // 查询数据状态
+        if (StringUtil.isNotBlank(status) && !StringUtil.equals("-1", status)) {
+            query.addFilter(ConfigConstant.DATA_SUCCESS, NumberUtil.toInt(status));
+        }
+        query.setMetaId(metaId);
+        query.setType(StorageEnum.DATA);
+        return storageService.query(query);
+    }
+
+    private void deleteExpiredData() {
+        List<MetaVO> metaAll = getMetaAll();
+        if (!CollectionUtils.isEmpty(metaAll)) {
+            Query query = new Query();
+            query.setType(StorageEnum.DATA);
+            int expireDataDays = systemConfigService.getSystemConfig().getExpireDataDays();
+            long expiredTime = Timestamp.valueOf(LocalDateTime.now().minusDays(expireDataDays)).getTime();
+            LongFilter expiredFilter = new LongFilter(ConfigConstant.CONFIG_MODEL_CREATE_TIME, FilterEnum.LT, expiredTime);
+            query.setBooleanFilter(new BooleanFilter().add(expiredFilter));
+            metaAll.forEach(metaVo-> {
+                query.setMetaId(metaVo.getId());
+                storageService.delete(query);
+            });
+        }
+    }
+
+    private void deleteExpiredLog() {
+        Query query = new Query();
+        query.setType(StorageEnum.LOG);
+        int expireLogDays = systemConfigService.getSystemConfig().getExpireLogDays();
+        long expiredTime = Timestamp.valueOf(LocalDateTime.now().minusDays(expireLogDays)).getTime();
+        LongFilter expiredFilter = new LongFilter(ConfigConstant.CONFIG_MODEL_CREATE_TIME, FilterEnum.LT, expiredTime);
+        query.setBooleanFilter(new BooleanFilter().add(expiredFilter));
+        storageService.delete(query);
+    }
+
+    private MetaVO convertMeta2Vo(Meta meta) {
+        Mapping mapping = profileComponent.getMapping(meta.getMappingId());
+        Assert.notNull(mapping, String.format("驱动不存在. metaId:%s, mappingId:%s", meta.getId(), meta.getMappingId()));
+        ModelEnum modelEnum = ModelEnum.getModelEnum(mapping.getModel());
+        MetaVO metaVo = new MetaVO(modelEnum.getName(), mapping.getName());
+        BeanUtils.copyProperties(meta, metaVo);
+        return metaVo;
+    }
+
+    private <T> T convert2Vo(Map map, Class<T> clazz) {
+        return JsonUtil.jsonToObj(JsonUtil.objToJson(map), clazz);
+    }
+
+    private String getDefaultMetaId(String id) {
+        if (StringUtil.isBlank(id)) {
+            List<MetaVO> list = getMetaAll();
+            if (!CollectionUtils.isEmpty(list)) {
+                return list.get(0).getId();
+            }
+        }
+        return id;
+    }
+
+    private List<MetricResponseVO> metricResponseToVo(Collection<MetricResponse> metrics) {
+        return metrics.stream().map(metric-> {
+            MetricResponseVO vo = new MetricResponseVO();
+            vo.setCode(metric.getCode());
+            vo.setGroup(metric.getGroup());
+            vo.setMetricName(metric.getMetricName());
+            vo.setMeasurements(metric.getMeasurements());
+            metricMap.computeIfPresent(vo.getCode(), (k, mdf)-> {
+                mdf.format(vo);
+                return mdf;
+            });
+            return vo;
+        }).collect(Collectors.toList());
+    }
+
+}

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.ghi</groupId>
+        <artifactId>dbcbc-connector</artifactId>
+        <version>2.0.0</version>
+    </parent>
+
+    <artifactId>dbcbc-connector-base</artifactId>
+
+    <dependencies>
+        <!-- sdk -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-sdk</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-elasticsearch -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-elasticsearch</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-file -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-file</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-http -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-http</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-kafka -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-kafka</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-mysql -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-mysql</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-dm -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-dm</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-oracle -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-oracle</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-postgresql -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-postgresql</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-sqlite -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-sqlite</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- dbcbc-connector-sqlserver -->
+        <dependency>
+            <groupId>org.ghi</groupId>
+            <artifactId>dbcbc-connector-sqlserver</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+
+        <!-- Log4j2 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-log4j2</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+</project>

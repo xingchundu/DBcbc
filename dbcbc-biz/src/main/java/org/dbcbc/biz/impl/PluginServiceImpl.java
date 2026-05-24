@@ -1,0 +1,137 @@
+/**
+ * DBSyncer Copyright 2020-2024 All Rights Reserved.
+ */
+package org.dbcbc.biz.impl;
+
+import org.dbcbc.biz.BizException;
+import org.dbcbc.biz.PluginService;
+import org.dbcbc.biz.vo.PluginVO;
+import org.dbcbc.common.enums.FileSuffixEnum;
+import org.dbcbc.common.util.CollectionUtils;
+import org.dbcbc.common.util.StringUtil;
+import org.dbcbc.parser.LogService;
+import org.dbcbc.parser.LogType;
+import org.dbcbc.parser.ParserException;
+import org.dbcbc.parser.ProfileComponent;
+import org.dbcbc.parser.model.Mapping;
+import org.dbcbc.parser.model.TableGroup;
+import org.dbcbc.plugin.PluginFactory;
+import org.dbcbc.sdk.model.Plugin;
+
+import org.springframework.beans.BeanUtils;
+import org.springframework.stereotype.Component;
+import org.springframework.util.Assert;
+
+import javax.annotation.Resource;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+/**
+ * @author AE86
+ * @version 1.0.0
+ * @date 2020/01/13 17:18
+ */
+@Component
+public class PluginServiceImpl implements PluginService {
+
+    @Resource
+    private PluginFactory pluginFactory;
+
+    @Resource
+    private ProfileComponent profileComponent;
+
+    @Resource
+    private LogService logService;
+
+    @Override
+    public List<PluginVO> getPluginAll() {
+        List<Plugin> pluginAll = pluginFactory.getPluginAll();
+        List<PluginVO> vos = new ArrayList<>();
+        if (!CollectionUtils.isEmpty(pluginAll)) {
+            Map<String, List<String>> pluginClassNameMap = getPluginClassNameMap();
+            vos.addAll(pluginAll.stream().map(plugin-> {
+                PluginVO vo = new PluginVO();
+                BeanUtils.copyProperties(plugin, vo);
+                vo.setMappingName(StringUtil.join(pluginClassNameMap.get(plugin.getClassName()), StringUtil.VERTICAL_LINE));
+                return vo;
+            }).collect(Collectors.toList()));
+        }
+        return vos;
+    }
+
+    @Override
+    public String getPluginPath() {
+        return pluginFactory.getPluginPath();
+    }
+
+    @Override
+    public String getLibraryPath() {
+        return pluginFactory.getLibraryPath();
+    }
+
+    @Override
+    public void loadPlugins() {
+        pluginFactory.loadPlugins();
+        logService.log(LogType.PluginLog.UPDATE);
+    }
+
+    @Override
+    public void checkFileSuffix(String filename) {
+        Assert.hasText(filename, "the plugin filename is null.");
+        String suffix = filename.substring(filename.lastIndexOf(".") + 1, filename.length());
+        FileSuffixEnum fileSuffix = FileSuffixEnum.getFileSuffix(suffix);
+        Assert.notNull(fileSuffix, "Illegal file suffix");
+        if (FileSuffixEnum.JAR != fileSuffix) {
+            String msg = String.format("不正确的文件扩展名 \"%s\"，只支持 \"%s\" 的文件扩展名。", filename, FileSuffixEnum.JAR.getName());
+            logService.log(LogType.PluginLog.CHECK_ERROR, msg);
+            throw new BizException(msg);
+        }
+    }
+
+    private Map<String, List<String>> getPluginClassNameMap() {
+        Map<String, List<String>> map = new ConcurrentHashMap<>();
+        List<Mapping> mappingAll = profileComponent.getMappingAll();
+        if (CollectionUtils.isEmpty(mappingAll)) {
+            return map;
+        }
+
+        for (Mapping m : mappingAll) {
+            Plugin plugin = m.getPlugin();
+            if (null != plugin) {
+                putPluginMap(map, plugin.getClassName(), m.getName());
+                continue;
+            }
+
+            List<TableGroup> tableGroupAll = profileComponent.getTableGroupAll(m.getId());
+            if (CollectionUtils.isEmpty(tableGroupAll)) {
+                continue;
+            }
+            for (TableGroup t : tableGroupAll) {
+                Plugin p = t.getPlugin();
+                if (null != p) {
+                    putPluginMap(map, p.getClassName(), m.getName());
+                    break;
+                }
+            }
+        }
+
+        return map;
+    }
+
+    private void putPluginMap(Map<String, List<String>> map, String className, String name) {
+        map.compute(className, (k, v)-> {
+            if (v == null) {
+                try {
+                    return new ArrayList<>();
+                } catch (Exception e) {
+                    throw new ParserException(e);
+                }
+            }
+            return v;
+        }).add(name);
+    }
+}

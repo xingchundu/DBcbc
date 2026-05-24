@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.ghi</groupId>
+        <artifactId>dbcbc</artifactId>
+        <version>2.0.0</version>
+    </parent>
+    <artifactId>dbcbc-connector</artifactId>
+    <packaging>pom</packaging>
+    <modules>
+        <module>dbcbc-connector-base</module>
+        <module>dbcbc-connector-elasticsearch</module>
+        <module>dbcbc-connector-file</module>
+        <module>dbcbc-connector-http</module>
+        <module>dbcbc-connector-kafka</module>
+        <module>dbcbc-connector-mysql</module>
+        <module>dbcbc-connector-dm</module>
+        <module>dbcbc-connector-oracle</module>
+        <module>dbcbc-connector-postgresql</module>
+        <module>dbcbc-connector-sqlite</module>
+        <module>dbcbc-connector-sqlserver</module>
+    </modules>
+</project>

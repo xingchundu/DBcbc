@@ -1,0 +1,219 @@
+/**
+ * DBSyncer Copyright 2020-2023 All Rights Reserved.
+ */
+package org.dbcbc.parser.model;
+
+import org.dbcbc.common.model.ApiKeyConfig;
+import org.dbcbc.common.model.IpWhitelistConfig;
+import org.dbcbc.common.model.JwtSecretConfig;
+import org.dbcbc.common.model.RsaConfig;
+import org.dbcbc.sdk.constant.ConfigConstant;
+
+/**
+ * 系统配置
+ *
+ * @version 1.0.0
+ * @Author AE86
+ * @Date 2020-05-29 20:13
+ */
+public class SystemConfig extends ConfigModel {
+
+    public SystemConfig() {
+        super.setType(ConfigConstant.SYSTEM);
+    }
+
+    /**
+     * 同步数据过期时间（天）
+     */
+    private int expireDataDays = 30;
+
+    /**
+     * 系统日志过期时间（天）
+     */
+    private int expireLogDays = 30;
+
+    /**
+     * 是否记录同步成功数据（false-关闭; true-开启）
+     */
+    private boolean enableStorageWriteSuccess;
+
+    /**
+     * 是否记录同步失败数据（false-关闭; true-开启）
+     */
+    private boolean enableStorageWriteFail = true;
+
+    /**
+     * 记录同步失败日志最大长度
+     */
+    private int maxStorageErrorLength = 8192;
+
+    /**
+     * 是否记录全量数据（false-关闭; true-开启）
+     */
+    private boolean enableStorageWriteFull;
+
+    /**
+     * 是否启用水印
+     */
+    private boolean enableWatermark;
+
+    /**
+     * 水印内容
+     */
+    private String watermark;
+
+    /**
+     * 表执行器上限数
+     */
+    private int maxBufferActuatorSize = 50;
+
+    /**
+     * 是否打印trace信息（false-关闭; true-开启）
+     */
+    private boolean enablePrintTraceInfo;
+
+    /**
+     * 是否开放API
+     */
+    private boolean enableOpenAPI;
+
+    /**
+     * RSA配置
+     */
+    private RsaConfig rsaConfig;
+
+    /**
+     * JWT密钥配置
+     */
+    private JwtSecretConfig jwtSecretConfig;
+
+    /**
+     * API密钥配置（客户端凭证）
+     */
+    private ApiKeyConfig apiKeyConfig;
+
+    /**
+     * IP白名单配置
+     */
+    private IpWhitelistConfig ipWhitelistConfig;
+
+    public int getExpireDataDays() {
+        return expireDataDays;
+    }
+
+    public void setExpireDataDays(int expireDataDays) {
+        this.expireDataDays = expireDataDays;
+    }
+
+    public int getExpireLogDays() {
+        return expireLogDays;
+    }
+
+    public void setExpireLogDays(int expireLogDays) {
+        this.expireLogDays = expireLogDays;
+    }
+
+    public boolean isEnableStorageWriteSuccess() {
+        return enableStorageWriteSuccess;
+    }
+
+    public void setEnableStorageWriteSuccess(boolean enableStorageWriteSuccess) {
+        this.enableStorageWriteSuccess = enableStorageWriteSuccess;
+    }
+
+    public boolean isEnableStorageWriteFail() {
+        return enableStorageWriteFail;
+    }
+
+    public void setEnableStorageWriteFail(boolean enableStorageWriteFail) {
+        this.enableStorageWriteFail = enableStorageWriteFail;
+    }
+
+    public int getMaxStorageErrorLength() {
+        return maxStorageErrorLength;
+    }
+
+    public void setMaxStorageErrorLength(int maxStorageErrorLength) {
+        this.maxStorageErrorLength = maxStorageErrorLength;
+    }
+
+    public boolean isEnableStorageWriteFull() {
+        return enableStorageWriteFull;
+    }
+
+    public void setEnableStorageWriteFull(boolean enableStorageWriteFull) {
+        this.enableStorageWriteFull = enableStorageWriteFull;
+    }
+
+    public boolean isEnableWatermark() {
+        return enableWatermark;
+    }
+
+    public void setEnableWatermark(boolean enableWatermark) {
+        this.enableWatermark = enableWatermark;
+    }
+
+    public String getWatermark() {
+        return watermark;
+    }
+
+    public void setWatermark(String watermark) {
+        this.watermark = watermark;
+    }
+
+    public int getMaxBufferActuatorSize() {
+        return maxBufferActuatorSize;
+    }
+
+    public void setMaxBufferActuatorSize(int maxBufferActuatorSize) {
+        this.maxBufferActuatorSize = maxBufferActuatorSize;
+    }
+
+    public boolean isEnablePrintTraceInfo() {
+        return enablePrintTraceInfo;
+    }
+
+    public void setEnablePrintTraceInfo(boolean enablePrintTraceInfo) {
+        this.enablePrintTraceInfo = enablePrintTraceInfo;
+    }
+
+    public boolean isEnableOpenAPI() {
+        return enableOpenAPI;
+    }
+
+    public void setEnableOpenAPI(boolean enableOpenAPI) {
+        this.enableOpenAPI = enableOpenAPI;
+    }
+
+    public RsaConfig getRsaConfig() {
+        return rsaConfig;
+    }
+
+    public void setRsaConfig(RsaConfig rsaConfig) {
+        this.rsaConfig = rsaConfig;
+    }
+
+    public JwtSecretConfig getJwtSecretConfig() {
+        return jwtSecretConfig;
+    }
+
+    public void setJwtSecretConfig(JwtSecretConfig jwtSecretConfig) {
+        this.jwtSecretConfig = jwtSecretConfig;
+    }
+
+    public ApiKeyConfig getApiKeyConfig() {
+        return apiKeyConfig;
+    }
+
+    public void setApiKeyConfig(ApiKeyConfig apiKeyConfig) {
+        this.apiKeyConfig = apiKeyConfig;
+    }
+
+    public IpWhitelistConfig getIpWhitelistConfig() {
+        return ipWhitelistConfig;
+    }
+
+    public void setIpWhitelistConfig(IpWhitelistConfig ipWhitelistConfig) {
+        this.ipWhitelistConfig = ipWhitelistConfig;
+    }
+}

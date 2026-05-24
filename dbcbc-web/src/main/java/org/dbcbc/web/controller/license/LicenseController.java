@@ -1,0 +1,242 @@
+/**
+ * DBSyncer Copyright 2020-2024 All Rights Reserved.
+ */
+package org.dbcbc.web.controller.license;
+
+import org.apache.commons.io.FileUtils;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.conn.HttpHostConnectException;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.util.EntityUtils;
+import org.dbcbc.biz.UserConfigService;
+import org.dbcbc.biz.vo.EditionInfoVO;
+import org.dbcbc.biz.vo.RestResult;
+import org.dbcbc.common.util.CollectionUtils;
+import org.dbcbc.common.util.JsonUtil;
+import org.dbcbc.common.util.StringUtil;
+import org.dbcbc.parser.LogService;
+import org.dbcbc.parser.LogType;
+import org.dbcbc.parser.model.UserInfo;
+import org.dbcbc.sdk.model.Product;
+import org.dbcbc.sdk.model.ProductInfo;
+import org.dbcbc.sdk.spi.LicenseService;
+import org.dbcbc.web.Version;
+import org.dbcbc.web.controller.BaseController;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.ModelMap;
+import org.springframework.util.Assert;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.multipart.MultipartFile;
+
+import javax.annotation.Resource;
+import javax.servlet.http.HttpServletRequest;
+import java.io.File;
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.Charset;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.Optional;
+
+@Controller
+@RequestMapping("/license")
+public class LicenseController extends BaseController {
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    @Resource
+    private LogService logService;
+
+    @Resource
+    private LicenseService licenseService;
+
+    @Resource
+    private UserConfigService userConfigService;
+
+    @Value("${dbcbc.web.license.server.address:http://101.132.145.213:9999/api/license/create}")
+    private String serverAddress;
+
+    public static final Integer SUCCESS = 200;
+    public static final String STATUS = "status";
+    public static final String DATA = "data";
+    public static final String MSG = "msg";
+
+    @RequestMapping("")
+    public String index(ModelMap model) {
+        model.put("key", licenseService.getKey());
+        model.put("editionInfo", getEditionInfoVO());
+        model.put("productInfo", licenseService.getProductInfo());
+        return "license/list";
+    }
+
+    @PostMapping(value = "/upload")
+    @ResponseBody
+    public RestResult upload(MultipartFile[] files) {
+        try {
+            if (files != null && files[0] != null) {
+                String filename = "license";
+                File dest = new File(licenseService.getLicensePath() + filename);
+                FileUtils.deleteQuietly(dest);
+                FileUtils.copyInputStreamToFile(files[0].getInputStream(), dest);
+                licenseService.updateLicense();
+                logger.info("{}:{}", LogType.UserLog.UPLOAD_LICENSE_FILE.getMessage(), filename);
+                logService.log(LogType.UserLog.UPLOAD_LICENSE_FILE);
+            }
+            return RestResult.restSuccess("ok");
+        } catch (Exception e) {
+            logService.log(LogType.UserLog.UPLOAD_LICENSE_FILE_ERROR);
+            logger.error(e.getLocalizedMessage(), e);
+            return RestResult.restFail(e.getMessage());
+        }
+    }
+
+    @PostMapping(value = "/activate")
+    @ResponseBody
+    public RestResult activate(HttpServletRequest request) {
+        try {
+            String content = getLicenseContent(getParams(request));
+            if (StringUtil.isNotBlank(content)) {
+                String filename = "license";
+                File dest = new File(licenseService.getLicensePath() + filename);
+                FileUtils.writeStringToFile(dest, content, Charset.defaultCharset());
+                licenseService.updateLicense();
+                logger.info("{}:{}", LogType.UserLog.ACTIVATE_FREE_LICENSE_FILE.getMessage(), filename);
+                logService.log(LogType.UserLog.ACTIVATE_FREE_LICENSE_FILE);
+            }
+            return RestResult.restSuccess("ok");
+        } catch (Exception e) {
+            logService.log(LogType.UserLog.ACTIVATE_FREE_LICENSE_FILE_ERROR);
+            logger.error(e.getLocalizedMessage(), e);
+            return RestResult.restFail(e.getMessage());
+        }
+    }
+
+    @PostMapping(value = "/remove")
+    @ResponseBody
+    public RestResult remove() {
+        try {
+            String filename = "license";
+            File dest = new File(licenseService.getLicensePath() + filename);
+            FileUtils.deleteQuietly(dest);
+            licenseService.updateLicense();
+            logger.info("{}:{}", LogType.UserLog.DELETE_LICENSE_FILE.getMessage(), filename);
+            logService.log(LogType.UserLog.DELETE_LICENSE_FILE);
+            return RestResult.restSuccess("ok");
+        } catch (Exception e) {
+            logService.log(LogType.UserLog.DELETE_LICENSE_FILE_ERROR);
+            logger.error(e.getLocalizedMessage(), e);
+            return RestResult.restFail(e.getMessage());
+        }
+    }
+
+    @GetMapping("/query.json")
+    @ResponseBody
+    public RestResult query() {
+        EditionInfoVO infoVo = getEditionInfoVO();
+        ProductInfo productInfo = licenseService.getProductInfo();
+        if (productInfo != null && !CollectionUtils.isEmpty(productInfo.getProducts())) {
+            Optional<Product> first = productInfo.getProducts().stream().min(Comparator.comparing(Product::getEffectiveTime));
+            if (first.isPresent()) {
+                infoVo.setEffectiveTime(first.get().getEffectiveTime());
+                formatEffectiveTimeContent(infoVo);
+            }
+        }
+        return RestResult.restSuccess(infoVo);
+    }
+
+    private EditionInfoVO getEditionInfoVO() {
+        EditionInfoVO infoVo = new EditionInfoVO();
+        infoVo.setEdition(licenseService.getEditionEnum().getCode());
+        infoVo.setEditionName(licenseService.getEditionEnum().getMessage());
+        return infoVo;
+    }
+
+    private void formatEffectiveTimeContent(EditionInfoVO infoVo) {
+        LocalDateTime before = LocalDateTime.ofInstant(Instant.ofEpochMilli(infoVo.getCurrentTime()), ZoneId.systemDefault());
+        LocalDateTime after = LocalDateTime.ofInstant(Instant.ofEpochMilli(infoVo.getEffectiveTime()), ZoneId.systemDefault());
+        // 1. 先算整年
+        long years = ChronoUnit.YEARS.between(before, after);
+        before = before.plusYears(years);
+        // 2. 再算整月
+        long months = ChronoUnit.MONTHS.between(before, after);
+        if (years > 0) {
+            infoVo.setEffectiveContent(String.format("还剩%d年%d个月", years, months));
+            return;
+        }
+        // 3. 再算整天
+        before = before.plusMonths(months);
+        long days = ChronoUnit.DAYS.between(before, after);
+        days = days <= 0 ? 0 : days;
+        if (months > 0) {
+            infoVo.setEffectiveContent(String.format("还剩%d个月%d天", months, days));
+            return;
+        }
+        // 4. 最后算小时
+        before = before.plusDays(days);
+        long hours = ChronoUnit.HOURS.between(before, after);
+        hours = hours <= 0 ? 0 : hours;
+        infoVo.setEffectiveContent(String.format("还剩%d天%d小时", days, hours));
+    }
+
+    private String getLicenseContent(Map<String, String> params) throws IOException {
+        ProductInfo info = JsonUtil.jsonToObj(JsonUtil.objToJson(params), ProductInfo.class);
+        UserInfo userInfo = getUserInfo();
+        Assert.notNull(userInfo, "会话过期，请重新登录");
+        info.setLicenseKey(licenseService.getKey());
+        info.setOsName(System.getProperty("os.name"));
+        info.setPhone(StringUtil.isNotBlank(info.getPhone()) ? info.getPhone() : userInfo.getPhone());
+        info.setEmail(StringUtil.isNotBlank(info.getEmail()) ? info.getEmail() : userInfo.getEmail());
+        info.setVersion(Version.CURRENT.getVersion());
+        return invoke(info);
+    }
+
+    public String invoke(ProductInfo info) throws IOException {
+        String data = URLEncoder.encode(JsonUtil.objToJson(info), "UTF-8");
+        StringEntity se = new StringEntity(data);
+        se.setContentEncoding("UTF-8");
+        se.setContentType("application/json");
+        HttpPost httpPost = new HttpPost(serverAddress);
+        httpPost.setEntity(se);
+        CloseableHttpClient httpClient = HttpClients.createDefault();
+        try {
+            CloseableHttpResponse response = httpClient.execute(httpPost);
+            if (response.getStatusLine().getStatusCode() == SUCCESS) {
+                Map<String, String> result = JsonUtil.jsonToObj(EntityUtils.toString(response.getEntity()), Map.class);
+                if (result.containsKey(DATA)) {
+                    String status = String.valueOf(result.get(STATUS));
+                    if (Integer.parseInt(status) == SUCCESS) {
+                        return result.get(DATA);
+                    }
+                }
+                throw new IllegalArgumentException(result.get(MSG));
+            }
+        } catch (HttpHostConnectException e) {
+            throw new IllegalArgumentException("网络连接异常，无法激活");
+        }
+        throw new IllegalArgumentException("授权服务地址异常，无法激活");
+    }
+
+    private UserInfo getUserInfo() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return userConfigService.getUserInfo(authentication.getName());
+    }
+
+    public void setServerAddress(String serverAddress) {
+        this.serverAddress = serverAddress;
+    }
+}

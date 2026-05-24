@@ -1,0 +1,132 @@
+/**
+ * DBSyncer Copyright 2020-2024 All Rights Reserved.
+ */
+package org.dbcbc.biz;
+
+import org.dbcbc.biz.vo.ConnectorVO;
+import org.dbcbc.common.model.Paging;
+import org.dbcbc.parser.model.Connector;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * @author AE86
+ * @version 1.0.0
+ * @date 2019/10/17 23:18
+ */
+public interface ConnectorService {
+
+    /**
+     * 新增连接器
+     *
+     * @param params
+     */
+    String add(Map<String, String> params);
+
+    /**
+     * 复制连接器
+     *
+     * @param id
+     * @return
+     */
+    String copy(String id);
+
+    /**
+     * 修改连接器
+     *
+     * @param params
+     */
+    String edit(Map<String, String> params);
+
+    /**
+     * 删除连接器
+     *
+     * @param id
+     */
+    String remove(String id);
+
+    /**
+     * 获取连接器
+     *
+     * @param id
+     * @return
+     */
+    Connector getConnector(String id);
+
+    /**
+     * 获取数据库信息
+     *
+     * @param id
+     * @return
+     */
+    List<String> getDatabase(String id);
+
+    /**
+     * 从数据源重新拉取库列表并写回连接器存储（用于新建库后更新下拉数据等）
+     *
+     * @param id 连接器 id
+     * @return 提示文案
+     */
+    String refreshConnectorDatabases(String id);
+
+    /**
+     * 获取Schema信息
+     *
+     * @param id
+     * @param catalog
+     * @return
+     */
+    List<String> getSchema(String id, String catalog);
+
+    /**
+     * 获取所有连接器
+     *
+     * @return
+     */
+    List<ConnectorVO> getConnectorAll();
+
+    /**
+     * 搜索连接器
+     *
+     * @param params
+     * @return
+     */
+    Paging<ConnectorVO> search(Map<String, String> params);
+
+    /**
+     * 获取所有支持的连接器类型
+     *
+     * @return
+     */
+    List<String> getConnectorTypeAll();
+
+    /**
+     * 检查连接器状态
+     */
+    void refreshHealth();
+
+    /**
+     * 连接器是否可用
+     *
+     * @param id
+     * @return
+     */
+    boolean isAlive(String id);
+
+    /**
+     * 测试连接器连通性；成功返回 null，失败返回完整错误信息
+     *
+     * @param id 连接器 id
+     * @return 错误信息，成功时为 null
+     */
+    String testConnection(String id);
+
+    /**
+     * 获取位点信息
+     *
+     * @param params
+     * @return
+     */
+    Object getPosition(String params);
+}

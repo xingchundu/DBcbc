@@ -1,0 +1,189 @@
+/**
+ * DBSyncer Copyright 2020-2024 All Rights Reserved.
+ */
+package org.dbcbc.biz.checker.impl.mapping;
+
+import org.dbcbc.biz.checker.AbstractChecker;
+import org.dbcbc.biz.checker.MappingConfigChecker;
+import org.dbcbc.biz.checker.impl.tablegroup.TableGroupChecker;
+import org.dbcbc.common.util.CollectionUtils;
+import org.dbcbc.common.util.NumberUtil;
+import org.dbcbc.common.util.StringUtil;
+import org.dbcbc.manager.impl.PreloadTemplate;
+import org.dbcbc.parser.ProfileComponent;
+import org.dbcbc.parser.model.ConfigModel;
+import org.dbcbc.parser.model.Mapping;
+import org.dbcbc.parser.model.Meta;
+import org.dbcbc.parser.model.TableGroup;
+import org.dbcbc.sdk.config.ListenerConfig;
+import org.dbcbc.sdk.constant.ConfigConstant;
+import org.dbcbc.sdk.enums.ListenerTypeEnum;
+import org.dbcbc.sdk.enums.ModelEnum;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+import org.springframework.util.Assert;
+
+import javax.annotation.Resource;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+/**
+ * @author AE86
+ * @version 1.0.0
+ * @date 2020/1/8 15:17
+ */
+@Component
+public class MappingChecker extends AbstractChecker {
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    @Resource
+    private ProfileComponent profileComponent;
+
+    @Resource
+    private Map<String, MappingConfigChecker> map;
+
+    @Resource
+    private TableGroupChecker tableGroupChecker;
+
+    @Resource
+    private PreloadTemplate preloadTemplate;
+
+    @Override
+    public ConfigModel checkAddConfigModel(Map<String, String> params) {
+        logger.info("params:{}", params);
+        String name = params.get(ConfigConstant.CONFIG_MODEL_NAME);
+        String sourceConnectorId = params.get("sourceConnectorId");
+        String sourceDatabase = params.get("sourceDatabase");
+        String sourceSchema = params.get("sourceSchema");
+        String targetConnectorId = params.get("targetConnectorId");
+        String targetDatabase = params.get("targetDatabase");
+        String targetSchema = params.get("targetSchema");
+        Assert.hasText(name, "驱动名称不能为空");
+        Assert.hasText(sourceConnectorId, "数据源不能为空.");
+        Assert.hasText(targetConnectorId, "目标源不能为空.");
+
+        Mapping mapping = new Mapping();
+        mapping.setName(name);
+        mapping.setSourceConnectorId(sourceConnectorId);
+        mapping.setSourceDatabase(sourceDatabase);
+        mapping.setSourceSchema(sourceSchema);
+        mapping.setTargetConnectorId(targetConnectorId);
+        mapping.setTargetDatabase(targetDatabase);
+        mapping.setTargetSchema(targetSchema);
+        mapping.setModel(ModelEnum.FULL.getCode());
+        mapping.setListener(new ListenerConfig(ListenerTypeEnum.LOG.getType()));
+        mapping.setParams(new HashMap<>());
+
+        // 修改基本配置
+        this.modifyConfigModel(mapping, params);
+
+        preloadTemplate.reConnect(mapping);
+
+        // 创建meta
+        addMeta(mapping);
+
+        return mapping;
+    }
+
+    @Override
+    public ConfigModel checkEditConfigModel(Map<String, String> params) {
+        logger.info("params:{}", params);
+        Assert.notEmpty(params, "MappingChecker check params is null.");
+        String id = params.get(ConfigConstant.CONFIG_MODEL_ID);
+        Mapping mapping = profileComponent.getMapping(id);
+        Assert.notNull(mapping, "Can not find mapping.");
+
+        // 修改基本配置
+        this.modifyConfigModel(mapping, params);
+
+        // 同步方式(仅支持全量或增量同步方式)
+        String model = params.get("model");
+        mapping.setModel(ModelEnum.getModelEnum(model).getCode());
+
+        // 全量配置
+        mapping.setReadNum(NumberUtil.toInt(params.get("readNum"), mapping.getReadNum()));
+        mapping.setBatchNum(NumberUtil.toInt(params.get("batchNum"), mapping.getBatchNum()));
+        mapping.setThreadNum(NumberUtil.toInt(params.get("threadNum"), mapping.getThreadNum()));
+        mapping.setForceUpdate(StringUtil.isNotBlank(params.get("forceUpdate")));
+
+        // 增量配置(日志/定时)
+        String incrementStrategy = params.get("incrementStrategy");
+        Assert.hasText(incrementStrategy, "MappingChecker check params incrementStrategy is empty");
+        String type = StringUtil.toLowerCaseFirstOne(incrementStrategy).concat("ConfigChecker");
+        MappingConfigChecker checker = map.get(type);
+        Assert.notNull(checker, "Checker can not be null.");
+        checker.modify(mapping, params);
+
+        // 自定义监听事件配置
+        updateListenerConfig(mapping.getListener(), params);
+
+        // 修改高级配置：过滤条件/转换配置/插件配置
+        this.modifySuperConfigModel(mapping, params);
+
+        preloadTemplate.reConnect(mapping);
+
+        // 合并关联的映射关系配置
+        batchMergeConfig(mapping, params);
+
+        return mapping;
+    }
+
+    public void addMeta(Mapping mapping) {
+        Meta meta = new Meta();
+        meta.setMappingId(mapping.getId());
+
+        // 修改基本配置
+        this.modifyConfigModel(meta, new HashMap<>());
+
+        String id = profileComponent.addConfigModel(meta);
+        mapping.setMetaId(id);
+    }
+
+    /**
+     * 修改监听器配置
+     *
+     * @param listener
+     * @param params
+     */
+    private void updateListenerConfig(ListenerConfig listener, Map<String, String> params) {
+        Assert.notNull(listener, "ListenerConfig can not be null.");
+
+        listener.setEnableUpdate(StringUtil.isNotBlank(params.get("enableUpdate")));
+        listener.setEnableInsert(StringUtil.isNotBlank(params.get("enableInsert")));
+        listener.setEnableDelete(StringUtil.isNotBlank(params.get("enableDelete")));
+        listener.setEnableDDL(StringUtil.isNotBlank(params.get("enableDDL")));
+    }
+
+    private void batchMergeConfig(Mapping mapping, Map<String, String> params) {
+        List<TableGroup> groupAll = profileComponent.getTableGroupAll(mapping.getId());
+        if (!CollectionUtils.isEmpty(groupAll)) {
+            // 手动排序
+            String[] sortedTableGroupIds = StringUtil.split(params.get("sortedTableGroupIds"), StringUtil.VERTICAL_LINE);
+            if (null != sortedTableGroupIds && sortedTableGroupIds.length > 0) {
+                Map<String, TableGroup> tableGroupMap = groupAll.stream().collect(Collectors.toMap(TableGroup::getId, f->f, (k1, k2)->k1));
+                groupAll.clear();
+                int size = sortedTableGroupIds.length;
+                int i = size;
+                while (i > 0) {
+                    TableGroup g = tableGroupMap.get(sortedTableGroupIds[size - i]);
+                    Assert.notNull(g, "Invalid sorted tableGroup.");
+                    g.setIndex(i);
+                    groupAll.add(g);
+                    i--;
+                }
+            }
+
+            // 合并配置
+            for (TableGroup g : groupAll) {
+                tableGroupChecker.mergeConfig(mapping, g);
+                profileComponent.editConfigModel(g);
+            }
+        }
+    }
+}

@@ -1,0 +1,20 @@
+/**
+ * DBSyncer Copyright 2020-2023 All Rights Reserved.
+ */
+package org.dbcbc.parser.strategy.impl;
+
+import org.dbcbc.parser.model.ConfigModel;
+import org.dbcbc.parser.strategy.GroupStrategy;
+
+/**
+ * @author AE86
+ * @version 1.0.0
+ * @date 2019/12/2 22:53
+ */
+public final class DefaultGroupStrategy implements GroupStrategy {
+
+    @Override
+    public String getGroupId(ConfigModel model) {
+        return model.getType();
+    }
+}

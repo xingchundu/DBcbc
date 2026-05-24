@@ -1,0 +1,192 @@
+/**
+ * DBSyncer Copyright 2020-2023 All Rights Reserved.
+ */
+package org.dbcbc.connector.kafka;
+
+import org.dbcbc.common.model.Result;
+import org.dbcbc.common.util.CollectionUtils;
+import org.dbcbc.common.util.StringUtil;
+import org.dbcbc.connector.kafka.cdc.KafkaListener;
+import org.dbcbc.connector.kafka.config.KafkaConfig;
+import org.dbcbc.connector.kafka.schema.KafkaSchemaResolver;
+import org.dbcbc.connector.kafka.validator.KafkaConfigValidator;
+import org.dbcbc.sdk.config.CommandConfig;
+import org.dbcbc.sdk.connector.AbstractConnector;
+import org.dbcbc.sdk.connector.ConfigValidator;
+import org.dbcbc.sdk.connector.ConnectorInstance;
+import org.dbcbc.sdk.connector.ConnectorServiceContext;
+import org.dbcbc.sdk.enums.ListenerTypeEnum;
+import org.dbcbc.sdk.enums.TableTypeEnum;
+import org.dbcbc.sdk.listener.Listener;
+import org.dbcbc.sdk.model.Field;
+import org.dbcbc.sdk.model.MetaInfo;
+import org.dbcbc.sdk.model.Table;
+import org.dbcbc.sdk.plugin.MetaContext;
+import org.dbcbc.sdk.plugin.PluginContext;
+import org.dbcbc.sdk.plugin.ReaderContext;
+import org.dbcbc.sdk.schema.SchemaResolver;
+import org.dbcbc.sdk.spi.ConnectorService;
+import org.dbcbc.sdk.util.PrimaryKeyUtil;
+
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.KafkaException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Kafka连接器实现
+ *
+ * @Author AE86
+ * @Version 1.0.0
+ * @Date 2021-11-22 23:55
+ */
+public class KafkaConnector extends AbstractConnector implements ConnectorService<KafkaConnectorInstance, KafkaConfig> {
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    private final String TOPIC = "topic";
+
+    private final KafkaConfigValidator configValidator = new KafkaConfigValidator();
+    private final KafkaSchemaResolver schemaResolver = new KafkaSchemaResolver();
+
+    @Override
+    public String getConnectorType() {
+        return "Kafka";
+    }
+
+    @Override
+    public TableTypeEnum getExtendedTableType() {
+        return TableTypeEnum.SEMI;
+    }
+
+    @Override
+    public Class<KafkaConfig> getConfigClass() {
+        return KafkaConfig.class;
+    }
+
+    @Override
+    public ConnectorInstance connect(KafkaConfig config, ConnectorServiceContext context) {
+        return new KafkaConnectorInstance(config);
+    }
+
+    @Override
+    public ConfigValidator getConfigValidator() {
+        return configValidator;
+    }
+
+    @Override
+    public void disconnect(KafkaConnectorInstance connectorInstance) {
+        connectorInstance.close();
+    }
+
+    @Override
+    public boolean isAlive(KafkaConnectorInstance connectorInstance) {
+        try {
+            connectorInstance.ping();
+            return true;
+        } catch (Exception e) {
+            logger.warn(e.getMessage(), e);
+            throw new KafkaException(e);
+        }
+    }
+
+    @Override
+    public List<String> getDatabases(KafkaConnectorInstance connectorInstance) {
+        try {
+            List<String> db = new ArrayList<>();
+            String clusterId = connectorInstance.getClusterId();
+            if (StringUtil.isNotBlank(clusterId)) {
+                db.add(clusterId);
+            }
+            return db;
+        } catch (Exception e) {
+            throw new KafkaException(e);
+        }
+    }
+
+    @Override
+    public List<Table> getTable(KafkaConnectorInstance connectorInstance, ConnectorServiceContext context) {
+        return new ArrayList<>();
+    }
+
+    @Override
+    public List<MetaInfo> getMetaInfo(KafkaConnectorInstance connectorInstance, ConnectorServiceContext context) {
+        List<MetaInfo> metaInfos = new ArrayList<>();
+        for (Table table : context.getTablePatterns()) {
+            MetaInfo metaInfo = new MetaInfo();
+            metaInfo.setTable(table.getName());
+            metaInfo.setTableType(getExtendedTableType().getCode());
+            metaInfo.setColumn(table.getColumn());
+            metaInfo.setExtInfo(table.getExtInfo());
+            metaInfos.add(metaInfo);
+        }
+        return metaInfos;
+    }
+
+    @Override
+    public long getCount(KafkaConnectorInstance connectorInstance, MetaContext metaContext) {
+        return 0;
+    }
+
+    @Override
+    public Result reader(KafkaConnectorInstance connectorInstance, ReaderContext context) {
+        throw new KafkaException("Kafka暂不支持全量读取");
+    }
+
+    @Override
+    public Result writer(KafkaConnectorInstance connectorInstance, PluginContext context) {
+        List<Map> data = context.getTargetList();
+        if (CollectionUtils.isEmpty(data)) {
+            logger.error("writer data can not be empty.");
+            throw new KafkaException("writer data can not be empty.");
+        }
+
+        Result result = new Result();
+        final List<Field> pkFields = PrimaryKeyUtil.findExistPrimaryKeyFields(context.getTargetFields());
+        try {
+            String topic = context.getCommand().get(TOPIC);
+            KafkaProducer<String, Object> producer = connectorInstance.getProducer(topic);
+            String key = StringUtil.join(pkFields, StringUtil.UNDERLINE);
+            data.forEach(row->producer.send(new ProducerRecord<>(topic, key, row)));
+            result.addSuccessData(data);
+        } catch (Exception e) {
+            // 记录错误数据
+            result.addFailData(data);
+            result.getError().append(e.getMessage()).append(System.lineSeparator());
+            logger.error(e.getMessage());
+        }
+        return result;
+    }
+
+    @Override
+    public Map<String, String> getSourceCommand(CommandConfig commandConfig) {
+        return new HashMap<>();
+    }
+
+    @Override
+    public Map<String, String> getTargetCommand(CommandConfig commandConfig) {
+        Map<String, String> cmd = new HashMap<>();
+        cmd.put(TOPIC, commandConfig.getTable().getName());
+        return cmd;
+    }
+
+    @Override
+    public Listener getListener(String listenerType) {
+        if (ListenerTypeEnum.isLog(listenerType)) {
+            return new KafkaListener();
+        }
+        return null;
+    }
+
+    @Override
+    public SchemaResolver getSchemaResolver() {
+        return schemaResolver;
+    }
+}
