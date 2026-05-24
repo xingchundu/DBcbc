@@ -129,14 +129,90 @@
 
 ## 安装部署
 
-### 方式一 下载安装包
-1. 安装[JDK 1.8](https://www.oracle.com/java/technologies/jdk8-downloads.html)（省略详细）
-2. 下载安装包[dbcbc-x.x.x.zip](https://gitee.com/ghi/dbcbc/releases)（也可手动编译）
-3. 解压安装包，Window执行bin/startup.bat，Linux执行bin/startup.sh
-4. 打开浏览器访问：http://127.0.0.1:18686
-5. 账号和密码：admin/admin
+### 方式一：二进制安装包（dbcbc-2.0.0-bin.zip）
 
-### 方式二 🐳 docker
+使用 **`dbcbc-2.0.0-bin.zip`** 在本地安装并启动 DBcbc（数据库同步服务）。
+
+#### 环境要求
+
+| 项目 | 说明 |
+|------|------|
+| **操作系统** | Linux x86_64 / aarch64、macOS（与启动脚本支持一致）；Windows 可使用 `bin` 目录下的对应脚本 |
+| **JDK** | **JDK 1.8**（路径需加入环境变量，或在 `bin/startup.sh` 中指定 `JAVA_HOME`） |
+| **内存** | 默认 JVM 约 **3GB** 堆（`-Xms3g` / `-Xmx3g`），机器物理内存建议不少于 **4GB** |
+| **磁盘** | 预留日志与数据目录空间（解压目录下 `logs`、`data` 等会随运行增长） |
+
+#### 解压安装
+
+1. 将 **`dbcbc-2.0.0-bin.zip`** 复制到目标目录，例如 Linux：`/opt/dbcbc`，Windows：`D:\Programs\dbcbc`。
+2. **解压** ZIP，得到安装根目录（通常名为 `dbcbc-2.0.0`，以实际解压结果为准）。
+3. 确认目录结构包含：`bin/`（启动/停止脚本）、`conf/`（如 `application.properties`）、`lib/`（程序与依赖 Jar）。
+
+> 下文 **安装根目录** 均指解压后的顶层目录。
+
+#### 配置（可选）
+
+按需修改 **`conf/application.properties`**，常见项：
+
+- **`server.port`**：Web 管理服务端口（默认 **`18686`**）
+- **`server.ip`**（若配置）：监听地址
+
+修改前建议备份配置文件。Linux / macOS 若未全局配置 JDK，可在 **`bin/startup.sh`** 中取消注释并设置：
+
+```bash
+#JAVA_HOME=/opt/jdk1.8.0_202
+```
+
+#### 启动与校验
+
+**Linux / macOS：**
+
+```bash
+cd 安装根目录/bin
+chmod +x startup.sh stop.sh    # 若无可执行权限时执行一次
+./startup.sh
+```
+
+看到 **`Start successfully! PID: xxxx`** 表示启动成功。
+
+**Windows：** 进入 **`安装根目录\bin`**，执行 `startup.bat` 或 `startup.cmd`（若存在）。
+
+**访问 Web：** http://127.0.0.1:18686（若改了端口则用新端口）。默认账号 **admin** / **admin**，首次登录后建议修改密码。
+
+#### 停止服务
+
+```bash
+cd 安装根目录/bin
+./stop.sh
+```
+
+Windows 请使用包内停止脚本或按运维规范结束主类 **`org.dbcbc.web.Application`** 对应进程。
+
+#### 目录与日志
+
+| 路径（相对安装根目录） | 用途 |
+|------------------------|------|
+| `logs/` | 运行日志、错误日志等 |
+| `conf/` | 配置文件 |
+| `lib/` | 程序库 |
+| `tmp.pid` | 启动脚本可能写入的进程 PID（以实际为准） |
+
+启动失败请先查看 **`logs`** 下最新日志；OOM 时可能生成 **`logs/heapdump.hprof`**。
+
+#### 端口与防火墙
+
+默认 Web 端口 **`18686`**。远程访问时请在防火墙或云安全组中 **放行对应 TCP 端口**。
+
+#### 安装常见问题
+
+1. **提示找不到 `JAVA_HOME` 或 `java`**：安装 JDK 8 并配置 `PATH` / `JAVA_HOME`，或在 **`startup.sh`** 中指定 `JAVA_HOME`。
+2. **端口被占用**：修改 **`conf/application.properties`** 中的 **`server.port`**，或关闭占用端口的进程后重启。
+3. **内存不足**：在 **`bin/startup.sh`** 中适当调小 `-Xms` / `-Xmx`（需与机器内存匹配，过小可能影响大表同步）。
+4. **MySQL 5.x 连接问题**：可能需要替换兼容的 MySQL 驱动 Jar 到 `lib` 目录，见下文「连接与同步 FAQ」。
+
+也可从 [Releases](https://gitee.com/ghi/dbcbc/releases) 下载安装包，或按下方「手动编译」自行构建。
+
+### 方式二：Docker
 * 阿里云镜像
 ```shell
 # 社区版
@@ -185,6 +261,49 @@ docker restart dbcbc
 docker rm dbcbc
 ```
 
+---
+
+## Oracle 源库增量同步注意事项（如 Oracle → PostgreSQL / MySQL / 达梦）
+
+以下面向 **Oracle 作为源、开启增量（LogMiner）** 的场景。Oracle 端通过 **`DBMS_LOGMNR`** 从 redo / 归档解析变更，**断点续传位点为 SCN**；目标库通过 JDBC 写入。全量同步仍以 Oracle 连接器正常读表为准。
+
+### 实例与库级配置
+
+| 项目 | 说明 |
+|------|------|
+| **归档模式** | 持续增量一般需要 **`ARCHIVELOG`**（`SELECT LOG_MODE FROM V$DATABASE` 可查）。`NOARCHIVELOG` 下通常无法满足持续增量。 |
+| **补充日志** | 重放 **`UPDATE`/`DELETE`** 等往往需要 **supplemental logging**（库级或表级 **主键补充日志**）。缺失时易出现无法唯一定位行、解析不完整等问题。 |
+| **网络与连接** | 放行监听端口；`SERVICE_NAME`/SID 与 JDBC 一致；**RAC/PDB/CDB** 时连接串、会话容器需与实际部署一致。 |
+| **与目标库差异** | 字符集、时区、`TIMESTAMP WITH TIME ZONE`、大字段与类型映射等可能影响落地，见上文 DDL / 驱动管理相关说明。 |
+| **版本支持** | 连接器标注 **Oracle 10g–19c**；**11g** 与 **12c+** 权限要求不同（见下表）。 |
+
+### 同步用 Oracle 账号权限（程序启动时会校验）
+
+满足 **其一** 即可在「角色」侧快捷通过：**拥有 `DBA` 角色**则不再逐项检查；否则 **必须** 授予 **`SELECT_CATALOG_ROLE`**。
+
+此外，当前会话需具备以下 **系统权限**（在 `SESSION_PRIVS` 中均可看到）：
+
+| Oracle 大版本 | 所需权限 |
+|---------------|----------|
+| **11g 及以下** | `CREATE SESSION`、`SELECT ANY TRANSACTION`、`SELECT ANY DICTIONARY` |
+| **12c 及以上** | 上述三项 + **`LOGMINING`** |
+
+由管理员执行时可参考（将 `your_sync_user` 换成实际用户；**11g 不要** 授权 `LOGMINING`）：
+
+```sql
+GRANT SELECT_CATALOG_ROLE TO your_sync_user;
+GRANT CREATE SESSION TO your_sync_user;
+GRANT SELECT ANY TRANSACTION TO your_sync_user;
+GRANT SELECT ANY DICTIONARY TO your_sync_user;
+GRANT LOGMINING TO your_sync_user;   -- 仅 12c 及以上需要
+```
+
+若还需 **全量、对账** 等读表操作，须对涉及 **业务表/schema** 授予 **`SELECT`**（或通过角色集中授权）。
+
+获取 SCN 时若无法访问 `V$DATABASE`，可额外授予：`GRANT EXECUTE ON DBMS_FLASHBACK TO your_sync_user;`
+
+---
+
 ## ⚙️手动编译
 > 先确保环境已安装JDK和Maven
 ```bash
@@ -209,7 +328,9 @@ $ ./build.sh
 | Linux | Intel(R) Xeon(R) CPU E5-2696 v3B 8核心 内存48GB | 4GB | 8000/秒 | 10000/秒 |
 | Windows | AMD Ryzen 7 5800x 8核心 12GB | 4GB | 7553/秒 | 9000/秒 |
 
-* MySQL无法连接。默认使用的驱动版本为8.0.21，如果为mysql5.x需要手动替换驱动 [mysql-connector-java-5.1.40.jar](https://gitee.com/ghi/dbcbc/attach_files) 
-* SQLServer无法连接。案例：[驱动程序无法通过使用安全套接字层(SSL)加密与 SQL Server 建立安全连接。错误:“The server selected protocol version TLS10 is not accepted by client preferences [TLS12]”](https://gitee.com/ghi/dbcbc/issues/I4PL46?from=project-issue) 
-* 同步数据乱码。案例：[mysql8表导入sqlserver2008R2后，sqlserver表nvarchar字段内容为乱码](https://gitee.com/ghi/dbcbc/issues/I4JXY0) 
-* [如何开启远程debug模式？](https://gitee.com/ghi/dbcbc/issues/I63F6R)  
+### 连接与同步 FAQ
+
+* **MySQL 无法连接**：默认驱动版本为 8.0.21，MySQL 5.x 可能需要手动替换驱动 [mysql-connector-java-5.1.40.jar](https://gitee.com/ghi/dbcbc/attach_files) 到 `lib` 目录。
+* **SQL Server 无法连接**：案例：[TLS10 与 TLS12 不兼容](https://gitee.com/ghi/dbcbc/issues/I4PL46?from=project-issue)
+* **同步数据乱码**：案例：[mysql8 导入 sqlserver2008R2 后 nvarchar 乱码](https://gitee.com/ghi/dbcbc/issues/I4JXY0)
+* **如何开启远程 debug 模式？**：[说明](https://gitee.com/ghi/dbcbc/issues/I63F6R)
