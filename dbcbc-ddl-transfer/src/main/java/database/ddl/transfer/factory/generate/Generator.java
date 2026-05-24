@@ -134,7 +134,7 @@ public abstract class Generator {
 			throw new SQLException("源库 schema 用户名为空，无法切换目标库连接");
 		}
 		String schemaUser = sourceDataBaseDefine.getCatalog().toUpperCase();
-		String defaultPwd = schemaUser;
+		String defaultPwd = DataBaseTypeProperties.oracleSchemaUserPassword(schemaUser);
 		if (targetDBSettings.getDataBaseType().equals(DataBaseType.DM)) {
 			defaultPwd = DataBaseTypeProperties.DM_DEFAULT_USER_PASSWORD;
 		}

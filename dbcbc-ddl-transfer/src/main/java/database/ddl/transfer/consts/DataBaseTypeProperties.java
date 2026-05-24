@@ -16,4 +16,11 @@ public class DataBaseTypeProperties {
 	/** 达梦新建用户默认口令（需满足复杂度规则，且不能与登录名相同） */
 	public static final String DM_DEFAULT_USER_PASSWORD = "Dameng123";
 
+	/**
+	 * Oracle 新建 schema 用户时的默认口令：与用户名相同（大写），建用户与切换 JDBC 连接须保持一致。
+	 */
+	public static String oracleSchemaUserPassword(String schemaUserUpper) {
+		return schemaUserUpper == null ? "" : schemaUserUpper.toUpperCase();
+	}
+
 }

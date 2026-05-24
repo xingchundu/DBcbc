@@ -124,8 +124,7 @@ public class OracleSqlGenerator extends Generator {
 		if (targetDBSettings != null && targetDBSettings.getDataBaseType() == DataBaseType.DM) {
 			return DataBaseTypeProperties.DM_DEFAULT_USER_PASSWORD;
 		}
-		String catalog = sourceDataBaseDefine == null ? null : sourceDataBaseDefine.getCatalog();
-		return catalog == null ? userUpper : catalog;
+		return DataBaseTypeProperties.oracleSchemaUserPassword(userUpper);
 	}
 
 	@Override

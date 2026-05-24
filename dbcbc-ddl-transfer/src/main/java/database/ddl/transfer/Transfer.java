@@ -155,7 +155,7 @@ public final class Transfer {
                 if (targetType == DataBaseType.DM) {
                     verify.setUserPassword(DataBaseTypeProperties.DM_DEFAULT_USER_PASSWORD);
                 } else {
-                    verify.setUserPassword(sourceDefine.getCatalog());
+                    verify.setUserPassword(DataBaseTypeProperties.oracleSchemaUserPassword(schemaUser));
                 }
             }
             return verify;

@@ -6,6 +6,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -16,7 +17,6 @@ import database.ddl.transfer.bean.PrimaryKey;
 import database.ddl.transfer.bean.Table;
 import database.ddl.transfer.consts.DataBaseType;
 import database.ddl.transfer.factory.analyse.Analyser;
-import database.ddl.transfer.utils.JdbcSecondaryIndexReader;
 import database.ddl.transfer.utils.StringUtil;
 
 /**
@@ -210,60 +210,101 @@ public class OracleSqlAnalyser extends Analyser {
 	}
 
 	/**
-	 * Oracle: JDBC getIndexInfo 需大写表名/模式,与 user_ 视图大写存储一致; 排除与主键列序完全相同的支撑索引
+	 * Oracle: JDBC getIndexInfo 对部分表/索引类型不稳定，改查 USER_INDEXES / USER_IND_COLUMNS；排除主键支撑索引
 	 */
 	@Override
 	protected List<IndexDefinition> getSecondaryIndexDefines(Connection connection, String catalog, String schema,
 			Map<String, Table> tableMap) {
-		List<IndexDefinition> all = new ArrayList<>();
-		String oraSchema = (schema != null && !schema.isEmpty()) ? schema.toUpperCase() : null;
-		for (Map.Entry<String, Table> e : tableMap.entrySet()) {
-			try {
-				all.addAll(JdbcSecondaryIndexReader.readForTable(connection, null, oraSchema, e.getValue(), e.getKey().toUpperCase()));
-			} catch (SQLException ex) {
-				throw new RuntimeException("获取 Oracle 二级索引失败: " + e.getKey(), ex);
+		String sql = "SELECT ui.TABLE_NAME, ui.INDEX_NAME, ui.UNIQUENESS, ui.INDEX_TYPE, "
+				+ "uic.COLUMN_NAME, uic.COLUMN_POSITION "
+				+ "FROM USER_INDEXES ui "
+				+ "INNER JOIN USER_IND_COLUMNS uic ON ui.INDEX_NAME = uic.INDEX_NAME AND ui.TABLE_NAME = uic.TABLE_NAME "
+				+ "WHERE NOT EXISTS ("
+				+ "  SELECT 1 FROM USER_CONSTRAINTS uc "
+				+ "  WHERE uc.CONSTRAINT_TYPE = 'P' AND uc.INDEX_NAME = ui.INDEX_NAME AND uc.TABLE_NAME = ui.TABLE_NAME"
+				+ ") "
+				+ "ORDER BY ui.TABLE_NAME, ui.INDEX_NAME, uic.COLUMN_POSITION";
+		PreparedStatement preparedStatement = null;
+		ResultSet resultSet = null;
+		Map<String, IndexDefinition> byKey = new LinkedHashMap<>();
+		try {
+			preparedStatement = connection.prepareStatement(sql);
+			resultSet = preparedStatement.executeQuery();
+			while (resultSet.next()) {
+				String tableName = resultSet.getString("TABLE_NAME");
+				String indexName = resultSet.getString("INDEX_NAME");
+				if (tableName == null || indexName == null) {
+					continue;
+				}
+				tableName = tableName.toLowerCase();
+				indexName = indexName.toLowerCase();
+				if (tableMap != null && !tableMap.isEmpty() && !tableMap.containsKey(tableName)) {
+					continue;
+				}
+				if (isOracleSystemIndexName(indexName)) {
+					continue;
+				}
+				String columnName = resultSet.getString("COLUMN_NAME");
+				if (columnName == null || isOracleSystemColumn(columnName)) {
+					continue;
+				}
+				columnName = columnName.toLowerCase();
+				Table table = tableMap == null ? null : tableMap.get(tableName);
+				if (table != null && table.getColumnsMap() != null && !table.getColumnsMap().isEmpty()
+						&& !table.getColumnsMap().containsKey(columnName)) {
+					continue;
+				}
+				String key = tableName + "\0" + indexName;
+				IndexDefinition def = byKey.get(key);
+				if (def == null) {
+					def = new IndexDefinition();
+					def.setTableName(tableName);
+					def.setIndexName(indexName);
+					def.setUnique("UNIQUE".equalsIgnoreCase(resultSet.getString("UNIQUENESS")));
+					def.setAccessMethod(mapOracleIndexType(resultSet.getString("INDEX_TYPE")));
+					byKey.put(key, def);
+				}
+				def.addColumnName(columnName);
 			}
+		} catch (Throwable e) {
+			throw new RuntimeException("获取 Oracle 二级索引失败", e);
+		} finally {
+			this.releaseResources(preparedStatement, resultSet);
 		}
-		// user_indexes: 区分 BITMAP 等(与 JDBC 默认 btree 占位合并)
-		enrichOracleWithUserIndexes(connection, all);
+		List<IndexDefinition> all = new ArrayList<>();
+		for (IndexDefinition def : byKey.values()) {
+			if (def.getColumnNames() == null || def.getColumnNames().isEmpty()) {
+				continue;
+			}
+			Table table = tableMap == null ? null : tableMap.get(def.getTableName());
+			if (table != null && table.isSameIndexColumnsAsPrimaryKey(def.getColumnNames())) {
+				continue;
+			}
+			all.add(def);
+		}
 		return all;
 	}
 
-	/**
-	 * 从 user_indexes 补充 index_type(如 BITMAP)
-	 */
-	private void enrichOracleWithUserIndexes(Connection connection, List<IndexDefinition> all) {
-		if (all == null || all.isEmpty()) {
-			return;
+	private static boolean isOracleSystemColumn(String columnName) {
+		return columnName != null && columnName.toLowerCase().matches("sys_nc\\d+\\$");
+	}
+
+	private static boolean isOracleSystemIndexName(String indexName) {
+		return indexName != null && indexName.toLowerCase().matches("sys_c\\d+");
+	}
+
+	private static String mapOracleIndexType(String indexType) {
+		if (indexType == null) {
+			return "btree";
 		}
-		PreparedStatement ps = null;
-		ResultSet rs = null;
-		Map<String, String> keyToType = new HashMap<>();
-		try {
-			String sql = "select lower(table_name) as t, lower(index_name) as i, index_type from user_indexes";
-			ps = connection.prepareStatement(sql);
-			rs = ps.executeQuery();
-			while (rs.next()) {
-				keyToType.put(rs.getString("t") + "\0" + rs.getString("i"), rs.getString("index_type"));
-			}
-		} catch (Throwable e) {
-			throw new RuntimeException("补充 Oracle 二级索引类型失败", e);
-		} finally {
-			this.releaseResources(ps, rs);
+		String upper = indexType.toUpperCase();
+		if (upper.contains("BITMAP")) {
+			return "bitmap";
 		}
-		for (IndexDefinition d : all) {
-			if (d.getTableName() == null || d.getIndexName() == null) {
-				continue;
-			}
-			String k = d.getTableName().toLowerCase() + "\0" + d.getIndexName().toLowerCase();
-			String it = keyToType.get(k);
-			if (it == null) {
-				continue;
-			}
-			if ("BITMAP".equalsIgnoreCase(it)) {
-				d.setAccessMethod("bitmap");
-			}
+		if (upper.contains("DOMAIN")) {
+			return "context";
 		}
+		return "btree";
 	}
 
 }
