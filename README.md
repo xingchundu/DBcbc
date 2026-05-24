@@ -288,14 +288,32 @@ docker rm dbcbc
 | **11g 及以下** | `CREATE SESSION`、`SELECT ANY TRANSACTION`、`SELECT ANY DICTIONARY` |
 | **12c 及以上** | 上述三项 + **`LOGMINING`** |
 
-由管理员执行时可参考（将 `your_sync_user` 换成实际用户；**11g 不要** 授权 `LOGMINING`）：
+由管理员执行时可参考（将 `your_sync_user` 换成实际用户；**11g 不要** 授权 `LOGMINING`）。
+
+**Oracle 11g 及以下**（无 `LOGMINING`，须显式授权 `DBMS_LOGMNR` 包）：
 
 ```sql
 GRANT SELECT_CATALOG_ROLE TO your_sync_user;
 GRANT CREATE SESSION TO your_sync_user;
 GRANT SELECT ANY TRANSACTION TO your_sync_user;
 GRANT SELECT ANY DICTIONARY TO your_sync_user;
-GRANT LOGMINING TO your_sync_user;   -- 仅 12c 及以上需要
+GRANT EXECUTE ON SYS.DBMS_LOGMNR TO your_sync_user;
+GRANT EXECUTE ON SYS.DBMS_LOGMNR_D TO your_sync_user;
+GRANT EXECUTE ON SYS.DBMS_FLASHBACK TO your_sync_user;
+```
+
+**Oracle 12c 及以上**：
+
+```sql
+GRANT SELECT_CATALOG_ROLE TO your_sync_user;
+GRANT CREATE SESSION TO your_sync_user;
+GRANT SELECT ANY TRANSACTION TO your_sync_user;
+GRANT SELECT ANY DICTIONARY TO your_sync_user;
+GRANT LOGMINING TO your_sync_user;
+-- 若仍报 PLS-00201，再补：
+GRANT EXECUTE ON SYS.DBMS_LOGMNR TO your_sync_user;
+GRANT EXECUTE ON SYS.DBMS_LOGMNR_D TO your_sync_user;
+GRANT EXECUTE ON SYS.DBMS_FLASHBACK TO your_sync_user;
 ```
 
 若还需 **全量、对账** 等读表操作，须对涉及 **业务表/schema** 授予 **`SELECT`**（或通过角色集中授权）。

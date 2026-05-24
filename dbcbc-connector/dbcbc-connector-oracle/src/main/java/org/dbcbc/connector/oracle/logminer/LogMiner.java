@@ -131,7 +131,7 @@ public class LogMiner {
             int version = conn.getMetaData().getDatabaseMajorVersion();
             // 12c+ 可能为 CDB 模式；检测/切换失败不阻断 LogMiner 启动
             if (version >= 12) {
-                LogMinerHelper.setSessionContainerIfCdbMode(conn);
+                LogMinerHelper.setSessionContainerIfCdbMode(conn, version);
             }
             // 低于10不支持
             else if (version < 10) {

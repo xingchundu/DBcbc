@@ -44,8 +44,9 @@ public class LogMinerHelper {
     private static final String LOG_MINER_SELECT_CATALOG_ROLE_ROLE = "SELECT_CATALOG_ROLE";
     private static final String LOG_MINER_SQL_GET_CURRENT_SCN = "select CURRENT_SCN from V$DATABASE";
     private static final String LOG_MINER_SQL_GET_CURRENT_SCN_FALLBACK = "SELECT DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER FROM DUAL";
-    /** 业务用户通常无 V$DATABASE 权限，改用 USERENV 判断 CDB */
+    /** 12c+ 可用；11g 无此 USERENV 参数会报 ORA-02003 */
     private static final String LOG_MINER_SQL_IS_CDB = "SELECT SYS_CONTEXT('USERENV','CDB') FROM DUAL";
+    private static final String LOG_MINER_SQL_IS_CDB_VDATABASE = "SELECT CDB FROM V$DATABASE";
     private static final String LOG_MINER_SQL_ALTER_SESSION_CONTAINER = "alter session set container=CDB$ROOT";
     private static final String LOG_MINER_SQL_ALTER_NLS_SESSION_PARAMETERS = "ALTER SESSION SET " + "  NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS'"
             + "  NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'" + "  NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'" + "  NLS_NUMERIC_CHARACTERS = '.,'" + "  TIME_ZONE = '00:00'";
@@ -202,12 +203,14 @@ public class LogMinerHelper {
     }
 
     /**
-     * CDB 检测/切换为可选步骤：普通业务用户常无 V$DATABASE 权限(ORA-00942)，失败时不中断 LogMiner 启动。
+     * CDB 检测/切换为可选步骤：11g 无 CDB；12c+ 先 USERENV 再 V$DATABASE 兜底，失败时不中断 LogMiner。
      */
-    public static void setSessionContainerIfCdbMode(Connection connection) {
+    public static void setSessionContainerIfCdbMode(Connection connection, int databaseMajorVersion) {
+        if (databaseMajorVersion < 12) {
+            return;
+        }
         try {
-            Boolean cdbMode = detectCdbMode(connection);
-            if (cdbMode == null || !cdbMode) {
+            if (!detectCdbMode(connection, databaseMajorVersion)) {
                 return;
             }
             try (Statement statement = connection.createStatement()) {
@@ -219,20 +222,97 @@ public class LogMinerHelper {
     }
 
     /**
-     * 判断是否为 CDB 模式（通过 USERENV，无需 V$DATABASE 权限）。
+     * 判断是否为 CDB 模式：12c+ 优先 USERENV(CDB)，11g 或 ORA-02003 时回退 V$DATABASE.CDB。
      */
-    private static Boolean detectCdbMode(Connection connection) {
+    private static boolean detectCdbMode(Connection connection, int databaseMajorVersion) {
+        if (databaseMajorVersion < 12) {
+            return false;
+        }
+        Boolean byUserEnv = detectCdbModeByUserEnv(connection);
+        if (byUserEnv != null) {
+            return byUserEnv;
+        }
+        return detectCdbModeByVDatabase(connection);
+    }
+
+    private static Boolean detectCdbModeByUserEnv(Connection connection) {
         try (Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(LOG_MINER_SQL_IS_CDB)) {
             if (!rs.next()) {
                 return false;
             }
-            String cdb = rs.getString(1);
-            return cdb != null && "YES".equalsIgnoreCase(cdb.trim());
+            return isCdbFlag(rs.getString(1));
         } catch (Exception e) {
-            logger.warn("无法判断 CDB 模式，跳过容器切换: {}", e.getMessage());
+            if (isUnsupportedCdbUserEnv(e)) {
+                logger.debug("USERENV(CDB) 不可用(通常为 11g 或非 CDB 环境)，跳过容器切换: {}", resolveExceptionMessage(e));
+                return false;
+            }
+            logger.debug("USERENV(CDB) 检测失败，尝试 V$DATABASE.CDB: {}", resolveExceptionMessage(e));
             return null;
         }
+    }
+
+    private static boolean detectCdbModeByVDatabase(Connection connection) {
+        try (Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(LOG_MINER_SQL_IS_CDB_VDATABASE)) {
+            if (!rs.next()) {
+                return false;
+            }
+            return isCdbFlag(rs.getString(1));
+        } catch (Exception e) {
+            if (isMissingDictionaryViewException(e)) {
+                logger.debug("无法查询 V$DATABASE.CDB，按非 CDB 继续 LogMiner: {}", resolveExceptionMessage(e));
+                return false;
+            }
+            logger.warn("V$DATABASE.CDB 检测失败，按非 CDB 继续 LogMiner: {}", resolveExceptionMessage(e));
+            return false;
+        }
+    }
+
+    private static boolean isCdbFlag(String cdb) {
+        return cdb != null && "YES".equalsIgnoreCase(cdb.trim());
+    }
+
+    private static boolean isUnsupportedCdbUserEnv(Exception e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof SQLException) {
+                if (((SQLException) current).getErrorCode() == 2003) {
+                    return true;
+                }
+            }
+            String message = current.getMessage();
+            if (message != null && message.contains("ORA-02003")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static boolean isMissingDictionaryViewException(Exception e) {
+        if (e instanceof SQLException) {
+            return isMissingDictionaryView((SQLException) e);
+        }
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof SQLException && isMissingDictionaryView((SQLException) current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static String resolveExceptionMessage(Exception e) {
+        if (e == null) {
+            return "";
+        }
+        if (e instanceof SQLException) {
+            return resolveSqlMessage((SQLException) e);
+        }
+        String message = e.getMessage();
+        return StringUtil.isNotBlank(message) ? message : e.getClass().getSimpleName();
     }
 
     private static boolean isMissingDictionaryView(SQLException e) {
@@ -240,12 +320,13 @@ public class LogMinerHelper {
         while (current != null) {
             if (current instanceof SQLException) {
                 SQLException sqlException = (SQLException) current;
-                if (sqlException.getErrorCode() == 942 || sqlException.getErrorCode() == 1031) {
+                int errorCode = sqlException.getErrorCode();
+                if (errorCode == 942 || errorCode == 1031 || errorCode == 904) {
                     return true;
                 }
             }
             String message = current.getMessage();
-            if (message != null && (message.contains("ORA-00942") || message.contains("ORA-01031"))) {
+            if (message != null && (message.contains("ORA-00942") || message.contains("ORA-01031") || message.contains("ORA-00904"))) {
                 return true;
             }
             current = current.getCause();
