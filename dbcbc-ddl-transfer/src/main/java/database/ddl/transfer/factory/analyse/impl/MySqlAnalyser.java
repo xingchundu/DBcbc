@@ -112,7 +112,12 @@ public class MySqlAnalyser extends Analyser {
 		column.setColumnComment(resultSet.getString("column_comment"));
 		column.setColumnOrder(resultSet.getInt("ordinal_position"));
 		column.setDefaultDefine(resultSet.getString("column_default"));
-		column.setNullAble(!"NO".equalsIgnoreCase(resultSet.getString("is_nullable")));
+		String nullableFlag = resultSet.getString("is_nullable");
+		if (nullableFlag == null || nullableFlag.trim().isEmpty()) {
+			column.setNullAble(true);
+		} else {
+			column.setNullAble("YES".equalsIgnoreCase(nullableFlag.trim()));
+		}
 		column.setColumnType(resultSet.getString("column_type"));
 		column.setColumnKey(resultSet.getString("column_key"));
 		column.setExtra(resultSet.getString("extra"));

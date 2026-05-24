@@ -5,8 +5,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 import database.ddl.transfer.bean.Column;
 import database.ddl.transfer.bean.DBSettings;
@@ -20,18 +24,58 @@ import database.ddl.transfer.utils.StringUtil;
 
 public class OracleSqlGenerator extends Generator {
 
+	private static final Set<String> ORACLE_RESERVED_WORDS = new HashSet<>(Arrays.asList(
+			"ACCESS", "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "AUDIT", "BETWEEN", "BY", "CHAR", "CHECK", "CLUSTER",
+			"COLUMN", "COMMENT", "COMPRESS", "CONNECT", "CREATE", "CURRENT", "DATE", "DECIMAL", "DEFAULT", "DELETE", "DESC",
+			"DISTINCT", "DROP", "ELSE", "EXCLUSIVE", "EXISTS", "FILE", "FLOAT", "FOR", "FROM", "GRANT", "GROUP", "HAVING",
+			"IDENTIFIED", "IMMEDIATE", "IN", "INCREMENT", "INDEX", "INITIAL", "INSERT", "INTEGER", "INTERSECT", "INTO", "IS",
+			"LEVEL", "LIKE", "LOCK", "LONG", "MAXEXTENTS", "MINUS", "MLSLABEL", "MODE", "MODIFY", "NOAUDIT", "NOCOMPRESS", "NOT",
+			"NOWAIT", "NULL", "NUMBER", "OF", "OFFLINE", "ON", "ONLINE", "OPTION", "OR", "ORDER", "PCTFREE", "PRIOR", "PRIVILEGES",
+			"PUBLIC", "RAW", "RENAME", "RESOURCE", "REVOKE", "ROW", "ROWID", "ROWNUM", "ROWS", "SELECT", "SESSION", "SET", "SHARE",
+			"SIZE", "SMALLINT", "START", "SUCCESSFUL", "SYNONYM", "SYSDATE", "TABLE", "THEN", "TO", "TRIGGER", "UID", "UNION",
+			"UNIQUE", "UPDATE", "USER", "VALIDATE", "VALUES", "VARCHAR", "VARCHAR2", "VIEW", "WHENEVER", "WHERE", "WITH"));
+
 	public OracleSqlGenerator(Connection connection, DataBaseDefine sourceDataBaseDefine, DBSettings targetDBSettings) {
 		super(connection, sourceDataBaseDefine, targetDBSettings);
 	}
 
 	/**
-	 * Oracle 双引号标识符，避免与保留字（如 MODE、ORDER、UID 等）冲突导致 ORA-00904；名中双引号写为两连续双引号
+	 * 达梦：双引号保留源端大小写；Oracle：无引号大写标识符（不区分大小写访问），仅保留字等必要时加引号。
 	 */
-	private static String q(String name) {
+	private String ident(String name) {
 		if (name == null) {
-			return "\"\"";
+			return isDmTarget() ? "\"\"" : "";
 		}
-		return "\"" + name.replace("\"", "\"\"") + "\"";
+		if (isDmTarget()) {
+			return "\"" + name.replace("\"", "\"\"") + "\"";
+		}
+		String upper = name.toUpperCase(Locale.ROOT);
+		if (mustQuoteOracleIdent(upper)) {
+			return "\"" + upper.replace("\"", "\"\"") + "\"";
+		}
+		return upper;
+	}
+
+	private boolean isDmTarget() {
+		return targetDBSettings != null && targetDBSettings.getDataBaseType() == DataBaseType.DM;
+	}
+
+	private static boolean mustQuoteOracleIdent(String upperName) {
+		if (upperName.isEmpty()) {
+			return true;
+		}
+		if (ORACLE_RESERVED_WORDS.contains(upperName)) {
+			return true;
+		}
+		return !upperName.matches("[A-Z_][A-Z0-9_$#]*");
+	}
+
+	/** 达梦沿用历史小写 DDL；Oracle 保持大写标识符，避免创建必须加引号的小写对象。 */
+	private String finalizeDdl(String sql) {
+		if (isDmTarget()) {
+			return sql.toLowerCase(Locale.ROOT);
+		}
+		return sql;
 	}
 
 	/**
@@ -130,7 +174,7 @@ public class OracleSqlGenerator extends Generator {
 	@Override
 	protected String getTableDDL(Table tableDefine) {
 		StringBuilder stringBuilder = new StringBuilder("create table ");
-		stringBuilder.append(q(tableDefine.getTableName())).append(" (");
+		stringBuilder.append(ident(tableDefine.getTableName())).append(" (");
 
 		PrimaryKey primaryKey = tableDefine.getPrimaryKey();
 		List<Column> columnList = tableDefine.getColumns();
@@ -147,7 +191,7 @@ public class OracleSqlGenerator extends Generator {
 		stringBuilder.append(");");
 		stringBuilder.append(this.getCommentDefineDDL(tableDefine));
 
-		return stringBuilder.toString().toLowerCase();
+		return finalizeDdl(stringBuilder.toString());
 	}
 	
 	/**
@@ -159,13 +203,13 @@ public class OracleSqlGenerator extends Generator {
 	private String getPrimaryKeyDefineDDL(PrimaryKey primaryKey) {
 		StringBuilder stringBuilder = new StringBuilder("");
 		if (!StringUtil.isBlank(primaryKey.getPkName())) {
-			stringBuilder.append("constraint ").append(q(primaryKey.getPkName())).append(" primary key(");
+			stringBuilder.append("constraint ").append(ident(primaryKey.getPkName())).append(" primary key(");
 		} else {
 			stringBuilder.append("primary key(");
 		}
 		List<String> columnNames = primaryKey.getColumns();
 		for (String columnName : columnNames) {
-			stringBuilder.append(q(columnName)).append(",");
+			stringBuilder.append(ident(columnName)).append(",");
 		}
 		stringBuilder.deleteCharAt(stringBuilder.length() - 1);
 		stringBuilder.append(")");
@@ -180,14 +224,12 @@ public class OracleSqlGenerator extends Generator {
 	 * @return DDL语句
 	 */
 	private String getColumnDefineDDL(Column column, PrimaryKey primaryKey) {
-		StringBuilder stringBuilder = new StringBuilder(q(column.getColumnName()));
+		StringBuilder stringBuilder = new StringBuilder(ident(column.getColumnName()));
 
 		String type = column.getFinalConvertDataType();
 		stringBuilder.append(" ");
 		stringBuilder.append(type);
-		if (!column.isNullAble() || isPrimaryKeyColumn(column, primaryKey)) {
-			stringBuilder.append(" ").append("not null");
-		}
+		appendColumnNullability(stringBuilder, column, primaryKey);
 
 		// 暂时注释掉默认值
 //		if (column.hasDefault() && column.getDefaultDefine().contains("now")) {
@@ -195,6 +237,24 @@ public class OracleSqlGenerator extends Generator {
 //		}
 
 		return stringBuilder.toString();
+	}
+
+	private void appendColumnNullability(StringBuilder stringBuilder, Column column, PrimaryKey primaryKey) {
+		if (isPrimaryKeyColumn(column, primaryKey) || !column.isNullAble()) {
+			stringBuilder.append(" not null");
+		} else if (!isDmTarget()) {
+			// Oracle 目标显式 NULL，避免与主键/其它约束混淆后表现为 NOT NULL
+			stringBuilder.append(" null");
+		}
+	}
+
+	private String buildModifyColumnNullabilityDDL(String tableName, Column sourceColumn, PrimaryKey primaryKey) {
+		StringBuilder stringBuilder = new StringBuilder("ALTER TABLE ");
+		stringBuilder.append(ident(tableName)).append(" MODIFY (").append(ident(sourceColumn.getColumnName())).append(" ")
+				.append(sourceColumn.getFinalConvertDataType());
+		appendColumnNullability(stringBuilder, sourceColumn, primaryKey);
+		stringBuilder.append(")");
+		return finalizeDdl(stringBuilder.toString());
 	}
 
 	private boolean isPrimaryKeyColumn(Column column, PrimaryKey primaryKey) {
@@ -221,25 +281,25 @@ public class OracleSqlGenerator extends Generator {
 			return null;
 		}
 		StringBuilder stringBuilder = new StringBuilder("ALTER TABLE ");
-		stringBuilder.append(q(sourceTable.getTableName())).append(" ADD CONSTRAINT ")
-				.append(q(sourcePk.getPkName())).append(" PRIMARY KEY(");
+		stringBuilder.append(ident(sourceTable.getTableName())).append(" ADD CONSTRAINT ")
+				.append(ident(sourcePk.getPkName())).append(" PRIMARY KEY(");
 		for (String columnName : sourcePk.getColumns()) {
-			stringBuilder.append(q(columnName)).append(",");
+			stringBuilder.append(ident(columnName)).append(",");
 		}
 		stringBuilder.deleteCharAt(stringBuilder.length() - 1);
 		stringBuilder.append(")");
-		return stringBuilder.toString().toLowerCase();
+		return finalizeDdl(stringBuilder.toString());
 	}
 	
 	private String getCommentDefineDDL(Table tableDefine) {
 		StringBuilder stringBuilder = new StringBuilder("");
-		String tq = q(tableDefine.getTableName());
+		String tq = ident(tableDefine.getTableName());
 		List<Column> columns = tableDefine.getColumns();
 		for (Column column : columns) {
 			if (!StringUtil.isBlank(column.getColumnComment())) {
 				// 注释中若含单引号，按 Oracle 规则加倍
 				String cmt = column.getColumnComment().replace("'", "''");
-				stringBuilder.append("COMMENT ON COLUMN ").append(tq).append(".").append(q(column.getColumnName())).append(" IS '").append(cmt)
+				stringBuilder.append("COMMENT ON COLUMN ").append(tq).append(".").append(ident(column.getColumnName())).append(" IS '").append(cmt)
 						.append("';");
 			}
 		}
@@ -254,51 +314,34 @@ public class OracleSqlGenerator extends Generator {
 	protected List<String> getModifiedColumnDDL(Table sourceTableDefine, Table targetTableDefine) {
 		StringBuilder stringBuilder = null;
 		List<String> resultList = new LinkedList<>();
-		List<String> primaryKeys = new ArrayList<>();
-		if(targetTableDefine.getPrimaryKey() != null) {
-			primaryKeys = targetTableDefine.getPrimaryKey().getColumns();
-		}
 		for (Column sourceColumn : sourceTableDefine.getColumns()) {
 			stringBuilder = new StringBuilder("");
 			String columnName = sourceColumn.getColumnName();
 			Column targetColumn = targetTableDefine.getColumnsMap().get(columnName);
 			if (targetColumn == null) {
-				// 字段不存在直接添加
-				stringBuilder.append("ALTER TABLE ").append(q(sourceTableDefine.getTableName())).append(" ADD (").append(q(columnName)).append(" ").append(sourceColumn.getFinalConvertDataType())
-						.append(" ");
-				if (!sourceColumn.isNullAble()) {
-					stringBuilder.append("NOT NULL");
-				} else {
-					stringBuilder.append("NULL");
-				}
+				stringBuilder.append("ALTER TABLE ").append(ident(sourceTableDefine.getTableName())).append(" ADD (")
+						.append(ident(columnName)).append(" ").append(sourceColumn.getFinalConvertDataType());
+				appendColumnNullability(stringBuilder, sourceColumn, sourceTableDefine.getPrimaryKey());
 				stringBuilder.append(");");
 
 				if (!StringUtil.isBlank(sourceColumn.getColumnComment())) {
 					String cmt = sourceColumn.getColumnComment().replace("'", "''");
-					stringBuilder.append("COMMENT ON COLUMN ").append(q(sourceTableDefine.getTableName())).append(".").append(q(columnName)).append(" IS '").append(cmt).append("';");
+					stringBuilder.append("COMMENT ON COLUMN ").append(ident(sourceTableDefine.getTableName())).append(".").append(ident(columnName)).append(" IS '").append(cmt).append("';");
 				}
 			} else {
+				if (sourceColumn.isNullAble() != targetColumn.isNullAble()) {
+					resultList.add(buildModifyColumnNullabilityDDL(sourceTableDefine.getTableName(), sourceColumn,
+							sourceTableDefine.getPrimaryKey()));
+					continue;
+				}
 				if (sourceColumn.equals(targetColumn)) {
 					continue;
-				} else {
-					// 由于不同数据库类型转换后与实际查询的类型存在不一致，导致不应该修改类型的字段也会再次执行类型修改操作，表数据量大时影响性能，暂关闭类型修改功能
-//					if(!sourceColumn.getDataType().equals(targetColumn.getDataType()) && !primaryKeys.contains(targetColumn.getColumnName())) {
-//						stringBuilder.append("ALTER TABLE ").append(sourceTableDefine.getTableName()).append(" MODIFY (").append(columnName).append(" ").append(sourceColumn.getFinalConvertDataType())
-//						.append(");");
-//					}
-//
-//					if (!StringUtil.isBlank(sourceColumn.getColumnComment()) && !sourceColumn.getColumnComment().equals(targetColumn.getColumnComment())) {
-//						stringBuilder.append("COMMENT ON COLUMN ").append(sourceDataBaseDefine.getTableName()).append(".").append(columnName).append(" IS '").append(sourceColumn.getColumnComment()).append("';");
-//					}
-//					
-//					if(!sourceColumn.isNullAble() == targetColumn.isNullAble() && !targetColumn.isNullAble()) {
-//						// 删除非空校验
-//						stringBuilder.append("ALTER TABLE ").append(sourceTableDefine.getTableName()).append(" MODIFY ").append(columnName).append(" null;");
-//					}
 				}
+				// 类型/注释修改暂关闭，见下方注释
+				// 由于不同数据库类型转换后与实际查询的类型存在不一致，导致不应该修改类型的字段也会再次执行类型修改操作，表数据量大时影响性能，暂关闭类型修改功能
 			}
 			if(!StringUtil.isBlank(stringBuilder.toString())) {
-				resultList.add(stringBuilder.toString());
+				resultList.add(finalizeDdl(stringBuilder.toString()));
 			}
 		}
 		return resultList;

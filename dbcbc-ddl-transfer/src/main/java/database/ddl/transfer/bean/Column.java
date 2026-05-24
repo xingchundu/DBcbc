@@ -52,9 +52,9 @@ public class Column {
 	private Integer scale;
 
 	/**
-	 * 是否允许为空
+	 * 是否允许为空（默认 true：未从源库元数据赋值前不应 implicit 生成 NOT NULL）
 	 */
-	private boolean nullAble;
+	private boolean nullAble = true;
 
 	/**
 	 * 默认值定义

@@ -116,7 +116,12 @@ public class OracleSqlAnalyser extends Analyser {
 		column.setColumnComment(resultSet.getString("comments"));
 		column.setColumnOrder(resultSet.getInt("column_id"));
 		column.setDefaultDefine(resultSet.getString("data_default"));
-		column.setNullAble(!"N".equalsIgnoreCase(resultSet.getString("nullable")));
+		String nullableFlag = resultSet.getString("nullable");
+		if (nullableFlag == null || nullableFlag.trim().isEmpty()) {
+			column.setNullAble(true);
+		} else {
+			column.setNullAble("Y".equalsIgnoreCase(nullableFlag.trim()));
+		}
 		column.setColumnType(null);
 		column.setColumnKey(resultSet.getString("constraint_type"));
 		column.setExtra(null);
