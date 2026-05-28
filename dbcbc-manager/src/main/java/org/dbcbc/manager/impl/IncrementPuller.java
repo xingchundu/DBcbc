@@ -114,6 +114,10 @@ public final class IncrementPuller extends AbstractPuller implements Application
             long[] delays = {5000, 10000, 20000};
             for (int attempt = 0; attempt <= maxRetries; attempt++) {
                 try {
+                    if (map.containsKey(metaId)) {
+                        logger.info("增量同步已启动：{}", metaId);
+                        return;
+                    }
                     map.computeIfAbsent(metaId, k-> {
                         logger.info("开始增量同步：{}, {}", metaId, mapping.getName());
                         long now = Instant.now().toEpochMilli();

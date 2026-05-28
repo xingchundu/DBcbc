@@ -117,7 +117,7 @@ public class OpenApiInterceptor implements HandlerInterceptor {
         // 优先使用实际连接IP，防止无代理时X-Forwarded-For伪造
         String remoteAddr = request.getRemoteAddr();
         // 仅当连接来自本地/代理时，才信任代理头
-        if ("127.0.0.1".equals(remoteAddr) || "0:0:0:0:0:0:0:1".equals(remoteAddr) || remoteAddr.startsWith("10.") || remoteAddr.startsWith("172.") || remoteAddr.startsWith("192.168.")) {
+        if ("127.0.0.1".equals(remoteAddr) || "0:0:0:0:0:0:0:1".equals(remoteAddr) || remoteAddr.startsWith("10.") || is172Private(remoteAddr) || remoteAddr.startsWith("192.168.")) {
             String ip = request.getHeader("X-Forwarded-For");
             if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
                 int index = ip.indexOf(',');
@@ -133,6 +133,19 @@ public class OpenApiInterceptor implements HandlerInterceptor {
             }
         }
         return remoteAddr;
+    }
+
+    private boolean is172Private(String ip) {
+        if (!ip.startsWith("172.")) {
+            return false;
+        }
+        try {
+            String secondOctet = ip.substring(4, ip.indexOf('.', 4));
+            int octet = Integer.parseInt(secondOctet);
+            return octet >= 16 && octet <= 31;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**

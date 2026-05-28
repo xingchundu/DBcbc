@@ -37,10 +37,11 @@ public class DispatchTaskServiceImpl implements DispatchTaskService {
     public void execute(DispatchTask task) {
         dispatchTaskExecutor.execute(active.compute(task.getUniqueId(), (k, t)-> {
             if (t != null) {
+                t.onDestroy(null);
                 t.destroy();
                 logger.warn("The dispatch task was terminated, {}", k);
             }
-            task.onDestroy(dispatchTask->active.remove(task.getUniqueId()));
+            task.onDestroy(dispatchTask->active.computeIfPresent(k, (key, current)->dispatchTask == current ? null : current));
             return task;
         }));
     }

@@ -84,7 +84,10 @@ public class OracleColumnValue extends AbstractColumnValue<Expression> {
 
     @Override
     public byte[] asByteArray() {
-        return new byte[0];
+        if (getValue() == null) {
+            return new byte[0];
+        }
+        return String.valueOf(getValue()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     @Override

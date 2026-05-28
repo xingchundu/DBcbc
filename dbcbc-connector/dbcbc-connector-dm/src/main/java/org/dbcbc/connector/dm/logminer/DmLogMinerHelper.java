@@ -179,8 +179,11 @@ public final class DmLogMinerHelper {
                 logger.debug("CUR_LSN unavailable, fallback to archived log SCN: {}", e.getMessage());
             }
             try (ResultSet rs = statement.executeQuery(LOG_MINER_SQL_GET_CURRENT_LSN_FALLBACK)) {
-                if (rs.next() && !rs.wasNull()) {
-                    return rs.getLong(1);
+                if (rs.next()) {
+                    long val = rs.getLong(1);
+                    if (!rs.wasNull()) {
+                        return val;
+                    }
                 }
             }
             throw new IllegalStateException("Couldn't get current LSN/SCN from DM database");

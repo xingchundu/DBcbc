@@ -292,20 +292,19 @@ public class SqlServerListener extends AbstractDatabaseListener {
     private void parseEvent(List<CDCEvent> list, Lsn stopLsn) {
         int size = list.size();
         for (int i = 0; i < size; i++) {
-            boolean isEnd = i == size - 1;
             CDCEvent event = list.get(i);
             if (TableOperationEnum.isUpdateAfter(event.getCode())) {
-                trySendEvent(new RowChangedEvent(event.getTableName(), ConnectorConstant.OPERTION_UPDATE, event.getRow(), null, (isEnd ? stopLsn : null)));
+                trySendEvent(new RowChangedEvent(event.getTableName(), ConnectorConstant.OPERTION_UPDATE, event.getRow(), null, stopLsn));
                 continue;
             }
 
             if (TableOperationEnum.isInsert(event.getCode())) {
-                trySendEvent(new RowChangedEvent(event.getTableName(), ConnectorConstant.OPERTION_INSERT, event.getRow(), null, (isEnd ? stopLsn : null)));
+                trySendEvent(new RowChangedEvent(event.getTableName(), ConnectorConstant.OPERTION_INSERT, event.getRow(), null, stopLsn));
                 continue;
             }
 
             if (TableOperationEnum.isDelete(event.getCode())) {
-                trySendEvent(new RowChangedEvent(event.getTableName(), ConnectorConstant.OPERTION_DELETE, event.getRow(), null, (isEnd ? stopLsn : null)));
+                trySendEvent(new RowChangedEvent(event.getTableName(), ConnectorConstant.OPERTION_DELETE, event.getRow(), null, stopLsn));
             }
         }
     }
@@ -354,7 +353,7 @@ public class SqlServerListener extends AbstractDatabaseListener {
             } catch (SQLServerException e) {
                 logger.warn("CDC查询参数不足: {}", e.getMessage());
             } catch (Exception e) {
-                logger.error(e.getMessage());
+                logger.error("CDC query failed", e);
             } finally {
                 close(rs);
                 close(ps);

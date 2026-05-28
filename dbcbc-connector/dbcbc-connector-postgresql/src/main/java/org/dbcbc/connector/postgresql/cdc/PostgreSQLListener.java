@@ -217,7 +217,7 @@ public class PostgreSQLListener extends AbstractDatabaseListener {
         for (int i = 0; i < ATTEMPTS; i++) {
             try {
                 instance.execute(databaseTemplate-> {
-                    databaseTemplate.execute(String.format("select pg_drop_replication_slot('%s')", slotName));
+                    databaseTemplate.execute(String.format("select pg_drop_replication_slot('%s')", slotName.replace("'", "''")));
                     return true;
                 });
                 break;

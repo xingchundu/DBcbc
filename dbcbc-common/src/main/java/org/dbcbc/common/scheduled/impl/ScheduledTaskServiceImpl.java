@@ -69,17 +69,13 @@ public class ScheduledTaskServiceImpl implements ScheduledTaskService, Disposabl
     }
 
     private void apply(String key, ScheduledFutureMapper scheduledFutureMapper) {
-        final ScheduledFuture scheduledFuture = map.get(key);
-        if (null != scheduledFuture && !scheduledFuture.isCancelled()) {
-            String msg = String.format(">>>>>> 任务已启动 %s  >>>>>>", key);
-            logger.error(msg);
-            throw new CommonException(msg);
-        }
         map.compute(key, (k, v)-> {
-            if (v == null) {
-                return scheduledFutureMapper.apply();
+            if (v != null && !v.isCancelled()) {
+                String msg = String.format(">>>>>> 任务已启动 %s  >>>>>>", key);
+                logger.error(msg);
+                throw new CommonException(msg);
             }
-            return v;
+            return scheduledFutureMapper.apply();
         });
     }
 

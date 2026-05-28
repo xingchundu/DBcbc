@@ -184,6 +184,8 @@ public abstract class AbstractBufferActuator<Request extends BufferRequest, Resp
         }
         if (isRunning(request)) {
             offerFailed(queue, (Request) request);
+        } else {
+            logger.warn("队列已满且任务未运行，数据被丢弃");
         }
     }
 
@@ -223,6 +225,9 @@ public abstract class AbstractBufferActuator<Request extends BufferRequest, Resp
         Map<String, Response> map = new ConcurrentHashMap<>();
         while (!queue.isEmpty() && batchCounter.get() < config.getBufferPullCount()) {
             Request poll = queue.poll();
+            if (poll == null) {
+                break;
+            }
             String key = getPartitionKey(poll);
             Response response = map.compute(key, (k, v)-> {
                 if (v == null) {

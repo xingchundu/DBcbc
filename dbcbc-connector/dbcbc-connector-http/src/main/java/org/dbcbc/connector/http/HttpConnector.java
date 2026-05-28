@@ -102,7 +102,8 @@ public class HttpConnector implements ConnectorService<HttpConnectorInstance, Ht
             }
             org.apache.http.client.methods.HttpHead request = new org.apache.http.client.methods.HttpHead(url);
             try (org.apache.http.client.methods.CloseableHttpResponse response = connectorInstance.getConnection().execute(request)) {
-                return response.getStatusLine().getStatusCode() < 500;
+                int statusCode = response.getStatusLine().getStatusCode();
+                return statusCode >= 200 && statusCode < 400;
             }
         } catch (Exception e) {
             logger.warn("HTTP连接检测失败: {}", e.getMessage());

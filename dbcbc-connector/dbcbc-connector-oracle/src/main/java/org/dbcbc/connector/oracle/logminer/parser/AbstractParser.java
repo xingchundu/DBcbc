@@ -12,12 +12,6 @@ import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
 import net.sf.jsqlparser.schema.Column;
 import oracle.jdbc.OracleTypes;
 
-import net.sf.jsqlparser.expression.BinaryExpression;
-import net.sf.jsqlparser.expression.Expression;
-import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
-import net.sf.jsqlparser.schema.Column;
-import oracle.jdbc.OracleTypes;
-
 import java.sql.Types;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -35,6 +29,9 @@ public abstract class AbstractParser implements Parser {
     protected List<Field> fields;
 
     public void findColumn(Expression expression) {
+        if (expression == null) {
+            return;
+        }
         if (expression instanceof IsNullExpression) {
             IsNullExpression isNullExpression = (IsNullExpression) expression;
             Column column = (Column) isNullExpression.getLeftExpression();

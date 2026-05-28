@@ -41,7 +41,7 @@ public class BaseServiceImpl {
     /**
      * 驱动启停锁
      */
-    protected final static Object LOCK = new Object();
+    protected final Object LOCK = new Object();
 
     protected boolean isRunning(String metaId) {
         Meta meta = profileComponent.getMeta(metaId);

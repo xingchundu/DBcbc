@@ -198,7 +198,8 @@ public class PostgreSqlGenerator extends Generator {
 				stringBuilder.append(";");
 
 				if (!StringUtil.isBlank(sourceColumn.getColumnComment())) {
-					stringBuilder.append("COMMENT ON COLUMN \"").append(sourceDataBaseDefine.getCatalog()).append("\".\"public\".\"").append(sourceTableDefine.getTableName()).append("\".\"").append(columnName).append("\" IS '").append(sourceColumn.getColumnComment()).append("';");
+					String escapedComment = sourceColumn.getColumnComment().replace("'", "''");
+					stringBuilder.append("COMMENT ON COLUMN \"").append(sourceTableDefine.getTableName()).append("\".\"").append(columnName).append("\" IS '").append(escapedComment).append("';");
 				}
 			} else {
 				if (sourceColumn.equals(targetColumn)) {

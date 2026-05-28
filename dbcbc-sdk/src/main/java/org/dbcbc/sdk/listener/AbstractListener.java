@@ -120,6 +120,7 @@ public abstract class AbstractListener<C extends ConnectorInstance> implements L
         try {
             TimeUnit.MILLISECONDS.sleep(timeout);
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             logger.info(e.getMessage());
         }
     }

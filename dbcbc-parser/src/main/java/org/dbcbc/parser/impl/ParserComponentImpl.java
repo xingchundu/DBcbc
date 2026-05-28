@@ -241,9 +241,11 @@ public class ParserComponentImpl implements ParserComponent {
                 executor.execute(()-> {
                     try {
                         Result w = connectorFactory.writer(tmpContext);
-                        result.addSuccessData(w.getSuccessData());
-                        result.addFailData(w.getFailData());
-                        result.getError().append(w.getError());
+                        synchronized (result) {
+                            result.addSuccessData(w.getSuccessData());
+                            result.addFailData(w.getFailData());
+                            result.getError().append(w.getError());
+                        }
                     } catch (Exception e) {
                         logger.error("全量写入批次异常", e);
                         synchronized (result) {

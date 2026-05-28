@@ -43,7 +43,7 @@ public class MySqlGenerator extends Generator {
 
 		stringBuilder.deleteCharAt(stringBuilder.length() - 1);
 		if (!StringUtil.isBlank(tableDefine.getTableComment())) {
-			stringBuilder.append(") COMMENT='").append(tableDefine.getTableComment()).append("';");
+			stringBuilder.append(") COMMENT='").append(tableDefine.getTableComment().replace("'", "''")).append("';");
 		} else {
 			stringBuilder.append(");");
 		}
@@ -148,7 +148,8 @@ public class MySqlGenerator extends Generator {
 //				}
 
 				if (!StringUtil.isBlank(sourceColumn.getColumnComment())) {
-					stringBuilder.append(" COMMENT '").append(sourceColumn.getColumnComment()).append("'");
+					String escapedComment = sourceColumn.getColumnComment().replace("'", "''");
+					stringBuilder.append(" COMMENT '").append(escapedComment).append("'");
 				}
 				if (!StringUtil.isBlank(afterColumn)) {
 					stringBuilder.append(" after `").append(afterColumn).append("`");

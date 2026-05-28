@@ -106,6 +106,7 @@ public final class FlushStrategyImpl implements FlushStrategy {
                     typeInfo.append(k).append("=").append(val == null ? "null" : val.getClass().getName()).append("; ");
                 });
                 logger.warn("可能存在Blob或inputStream大文件类型, 无法序列化。字段类型详情: {}", typeInfo, e);
+                return;
             }
             storageBufferActuator.offer(new StorageRequest(metaId, row));
         });

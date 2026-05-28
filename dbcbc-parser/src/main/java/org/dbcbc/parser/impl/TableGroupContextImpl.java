@@ -77,7 +77,7 @@ public final class TableGroupContextImpl implements TableGroupContext {
         Map<String, List<TableGroupPicker>> pickerMap = new ConcurrentHashMap<>();
 
         public void add(String tableName, TableGroup tableGroup) {
-            pickerMap.computeIfAbsent(tableName, k->new ArrayList<>()).add(new TableGroupPicker(tableGroup));
+            pickerMap.computeIfAbsent(tableName, k->new java.util.concurrent.CopyOnWriteArrayList<>()).add(new TableGroupPicker(tableGroup));
         }
 
         public void remove(String tableName) {

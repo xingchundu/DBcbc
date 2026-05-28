@@ -121,8 +121,12 @@ public final class BufferActuatorRouter implements DisposableBean {
                     TimeUnit.MILLISECONDS.sleep(10);
                 } catch (InterruptedException ex) {
                     logger.error(ex.getMessage(), ex);
+                    Thread.currentThread().interrupt();
+                    return;
                 }
             }
+            actuator.offer(request);
+            return;
         }
         actuator.offer(new WriterRequest(event));
     }

@@ -112,9 +112,8 @@ public class DiskStorageService extends AbstractStorageService {
     public void deleteAll(String sharding) {
         shards.computeIfPresent(sharding, (k, v)-> {
             v.deleteAll();
-            return v;
+            return null;
         });
-        shards.remove(sharding);
     }
 
     @Override

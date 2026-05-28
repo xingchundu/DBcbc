@@ -27,7 +27,7 @@ public abstract class AbstractMessageDecoder implements MessageDecoder {
 
     @Override
     public boolean skipMessage(ByteBuffer buffer, LogSequenceNumber startLsn, LogSequenceNumber lastReceiveLsn) {
-        if (null == lastReceiveLsn || lastReceiveLsn.asLong() == 0 || startLsn.equals(lastReceiveLsn)) {
+        if (null == lastReceiveLsn || lastReceiveLsn.asLong() == 0) {
             return true;
         }
 

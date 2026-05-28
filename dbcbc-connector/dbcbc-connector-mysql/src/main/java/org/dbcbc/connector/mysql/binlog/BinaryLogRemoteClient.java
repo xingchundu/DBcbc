@@ -589,7 +589,9 @@ public class BinaryLogRemoteClient implements BinaryLogClient {
                     // auto-commit query, likely DDL
                     commitGtid();
                 }
+                break;
             default:
+                break;
         }
     }
 
@@ -706,7 +708,7 @@ public class BinaryLogRemoteClient implements BinaryLogClient {
             }
             while (connectedError) {
                 try {
-                    logger.info("Trying to restore lost connection to {}}", createClientId());
+                    logger.info("Trying to restore lost connection to {}", createClientId());
                     if (!connected) {
                         logger.warn("Trying to stop");
                         break;

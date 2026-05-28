@@ -96,6 +96,10 @@ public class Shard {
     }
 
     public void delete(Query query) {
+        if (!indexWriter.isOpen()) {
+            logger.warn("IndexWriter is closed, skip delete operation");
+            return;
+        }
         try {
             indexWriter.deleteDocuments(query);
             indexWriter.flush();
@@ -119,7 +123,7 @@ public class Shard {
     }
 
     public void close() throws IOException {
-        if (indexWriter != null) {
+        if (indexWriter != null && indexWriter.isOpen()) {
             indexWriter.commit();
             indexWriter.close();
         }
@@ -136,8 +140,8 @@ public class Shard {
                 indexReader.close();
                 indexReader = changeReader;
             }
+            return new IndexSearcher(indexReader);
         }
-        return new IndexSearcher(indexReader);
     }
 
     public Paging query(Option option, int pageNum, int pageSize, Sort sort) throws IOException {

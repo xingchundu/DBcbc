@@ -5,6 +5,8 @@ package org.dbcbc.sdk.listener;
 
 import org.dbcbc.common.util.CollectionUtils;
 import org.dbcbc.common.util.StringUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.dbcbc.sdk.connector.DefaultConnectorServiceContext;
 import org.dbcbc.sdk.connector.database.Database;
 import org.dbcbc.sdk.connector.database.DatabaseConnectorInstance;
@@ -29,6 +31,8 @@ import java.util.stream.Collectors;
  * @date 2022/5/29 21:46
  */
 public abstract class AbstractDatabaseListener extends AbstractListener<DatabaseConnectorInstance> {
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
 
     /**
      * 自定义SQL，支持1对多
@@ -70,7 +74,8 @@ public abstract class AbstractDatabaseListener extends AbstractListener<Database
                         try {
                             queryDqlData(dqlMapper, event.getChangedRow());
                         } catch (Exception e) {
-                            return;
+                            logger.error("DQL query failed for table: {}", event.getSourceTableName(), e);
+                            break;
                         }
                         break;
                     case ConnectorConstant.OPERTION_DELETE:
@@ -193,8 +198,10 @@ public abstract class AbstractDatabaseListener extends AbstractListener<Database
                 return databaseTemplate.queryForMap(dqlMapper.sql, args);
             });
             if (!CollectionUtils.isEmpty(row)) {
+                List<Object> newData = new ArrayList<>(dqlMapper.column.size());
+                dqlMapper.column.forEach(field->newData.add(row.get(field.getName())));
                 data.clear();
-                dqlMapper.column.forEach(field->data.add(row.get(field.getName())));
+                data.addAll(newData);
             }
         }
     }
@@ -211,8 +218,9 @@ public abstract class AbstractDatabaseListener extends AbstractListener<Database
                 row.add(null);
             }
             if (!CollectionUtils.isEmpty(row)) {
+                List<Object> newData = new ArrayList<>(row);
                 data.clear();
-                data.addAll(row);
+                data.addAll(newData);
             }
         }
     }

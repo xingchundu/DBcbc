@@ -266,7 +266,7 @@ public class DmLogMiner {
                     };
                     // 生成操作唯一标识：scn + 表名 + 操作类型 + SQL内容hash
                     // 用于防止重复查询导致的重复处理（同一事务的不同DML可能有相同SCN，所以不能只用SCN判断）
-                    String operationId = scn + "_" + tableName + "_" + operationCode + "_" + redoSql.hashCode();
+                    String operationId = scn + "_" + tableName + "_" + operationCode + "_" + redoSql;
                     transactionalBuffer.registerCommitCallback(txId, scn, operationId, commitCallback);
                 }
             }
