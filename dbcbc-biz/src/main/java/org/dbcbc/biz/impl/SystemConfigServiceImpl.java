@@ -73,7 +73,6 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     public SystemConfigVO getSystemConfigVo() {
         SystemConfigVO systemConfigVo = new SystemConfigVO();
         BeanUtils.copyProperties(getSystemConfig(), systemConfigVo);
-        systemConfigVo.setWatermark(getWatermark(systemConfigVo));
         return systemConfigVo;
     }
 
@@ -128,11 +127,6 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         } finally {
             FileUtils.deleteQuietly(file);
         }
-    }
-
-    @Override
-    public String getWatermark(SystemConfig systemConfig) {
-        return StringUtil.isNotBlank(systemConfig.getWatermark()) ? systemConfig.getWatermark() : appConfig.getName() + "-${username}<br />" + appConfig.getCompany();
     }
 
     @Override

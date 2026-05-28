@@ -53,16 +53,6 @@ public class SystemConfig extends ConfigModel {
     private boolean enableStorageWriteFull;
 
     /**
-     * 是否启用水印
-     */
-    private boolean enableWatermark;
-
-    /**
-     * 水印内容
-     */
-    private String watermark;
-
-    /**
      * 表执行器上限数
      */
     private int maxBufferActuatorSize = 50;
@@ -143,22 +133,6 @@ public class SystemConfig extends ConfigModel {
 
     public void setEnableStorageWriteFull(boolean enableStorageWriteFull) {
         this.enableStorageWriteFull = enableStorageWriteFull;
-    }
-
-    public boolean isEnableWatermark() {
-        return enableWatermark;
-    }
-
-    public void setEnableWatermark(boolean enableWatermark) {
-        this.enableWatermark = enableWatermark;
-    }
-
-    public String getWatermark() {
-        return watermark;
-    }
-
-    public void setWatermark(String watermark) {
-        this.watermark = watermark;
     }
 
     public int getMaxBufferActuatorSize() {

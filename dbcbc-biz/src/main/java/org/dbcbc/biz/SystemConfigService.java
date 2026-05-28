@@ -64,14 +64,6 @@ public interface SystemConfigService {
     void refreshConfig(File file);
 
     /**
-     * 获取水印信息
-     *
-     * @param systemConfig
-     * @return
-     */
-    String getWatermark(SystemConfig systemConfig);
-
-    /**
      * 生成RSA配置
      *
      * @param keyLength
