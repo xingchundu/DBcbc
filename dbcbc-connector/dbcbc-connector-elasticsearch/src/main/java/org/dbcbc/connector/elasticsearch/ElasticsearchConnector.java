@@ -328,6 +328,9 @@ public final class ElasticsearchConnector extends AbstractConnector implements C
 
         Result result = new Result();
         final List<Field> pkFields = PrimaryKeyUtil.findExistPrimaryKeyFields(context.getTargetFields());
+        if (pkFields.isEmpty()) {
+            throw new ElasticsearchException("目标ES索引未定义主键字段，无法执行写入操作");
+        }
         try {
             final BulkRequest request = new BulkRequest();
             final String pk = pkFields.get(0).getName();

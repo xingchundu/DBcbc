@@ -126,6 +126,7 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
         // 匹配相似表 on
         if (StringUtil.isNotBlank(params.get("autoMatchTable"))) {
             matchSimilarTableGroups(model);
+            submitMappingCountTask((Mapping) model, null);
             return id;
         }
 
@@ -345,6 +346,42 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
     }
 
     @Override
+    public String batchStart(String ids) {
+        Assert.hasText(ids, "驱动ID不能为空");
+        String[] idArray = StringUtil.split(ids, ",");
+        int success = 0;
+        int fail = 0;
+        for (String id : idArray) {
+            try {
+                start(id);
+                success++;
+            } catch (Exception e) {
+                fail++;
+                logger.warn("批量启动驱动失败：{}, {}", id, e.getMessage());
+            }
+        }
+        return String.format("批量启动完成：成功%d，失败%d", success, fail);
+    }
+
+    @Override
+    public String batchStop(String ids) {
+        Assert.hasText(ids, "驱动ID不能为空");
+        String[] idArray = StringUtil.split(ids, ",");
+        int success = 0;
+        int fail = 0;
+        for (String id : idArray) {
+            try {
+                stop(id);
+                success++;
+            } catch (Exception e) {
+                fail++;
+                logger.warn("批量停止驱动失败：{}, {}", id, e.getMessage());
+            }
+        }
+        return String.format("批量停止完成：成功%d，失败%d", success, fail);
+    }
+
+    @Override
     public String refreshMappingTables(String id) {
         Mapping mapping = profileComponent.getMapping(id);
         Assert.notNull(mapping, "The mapping id is invalid.");
@@ -438,8 +475,8 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
     }
 
     private MappingVO convertMapping2Vo(Mapping mapping) {
-        String model = mapping.getModel();
         Assert.notNull(mapping, "Mapping can not be null.");
+        String model = mapping.getModel();
 
         // 元信息
         Meta meta = profileComponent.getMeta(mapping.getMetaId());

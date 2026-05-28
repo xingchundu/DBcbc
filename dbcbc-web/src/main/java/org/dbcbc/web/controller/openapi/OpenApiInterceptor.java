@@ -114,44 +114,25 @@ public class OpenApiInterceptor implements HandlerInterceptor {
      * @return 客户端IP地址
      */
     private String getClientIp(HttpServletRequest request) {
-        String ip = request.getHeader("X-Forwarded-For");
-        if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
-            // 多次反向代理后会有多个IP值，第一个IP才是真实IP
-            int index = ip.indexOf(',');
-            if (index != -1) {
-                return ip.substring(0, index).trim();
-            } else {
+        // 优先使用实际连接IP，防止无代理时X-Forwarded-For伪造
+        String remoteAddr = request.getRemoteAddr();
+        // 仅当连接来自本地/代理时，才信任代理头
+        if ("127.0.0.1".equals(remoteAddr) || "0:0:0:0:0:0:0:1".equals(remoteAddr) || remoteAddr.startsWith("10.") || remoteAddr.startsWith("172.") || remoteAddr.startsWith("192.168.")) {
+            String ip = request.getHeader("X-Forwarded-For");
+            if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
+                int index = ip.indexOf(',');
+                if (index != -1) {
+                    return ip.substring(0, index).trim();
+                } else {
+                    return ip.trim();
+                }
+            }
+            ip = request.getHeader("X-Real-IP");
+            if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
                 return ip.trim();
             }
         }
-
-        ip = request.getHeader("X-Real-IP");
-        if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
-            return ip.trim();
-        }
-
-        ip = request.getHeader("Proxy-Client-IP");
-        if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
-            return ip.trim();
-        }
-
-        ip = request.getHeader("WL-Proxy-Client-IP");
-        if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
-            return ip.trim();
-        }
-
-        ip = request.getHeader("HTTP_CLIENT_IP");
-        if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
-            return ip.trim();
-        }
-
-        ip = request.getHeader("HTTP_X_FORWARDED_FOR");
-        if (StringUtil.isNotBlank(ip) && !"unknown".equalsIgnoreCase(ip)) {
-            return ip.trim();
-        }
-
-        // 如果以上都获取不到，使用request.getRemoteAddr()
-        return request.getRemoteAddr();
+        return remoteAddr;
     }
 
     /**
@@ -169,7 +150,7 @@ public class OpenApiInterceptor implements HandlerInterceptor {
      * 写入错误响应
      */
     private void writeErrorResponse(HttpServletResponse response, int code, String message) throws IOException {
-        response.setStatus(HttpServletResponse.SC_OK);
+        response.setStatus(code == 401 ? HttpServletResponse.SC_UNAUTHORIZED : HttpServletResponse.SC_FORBIDDEN);
         response.setContentType("application/json;charset=UTF-8");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         

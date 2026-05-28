@@ -140,10 +140,20 @@ public abstract class AbstractBufferActuator<Request extends BufferRequest, Resp
     protected void process(Map<String, Response> map) {
         map.forEach((key, response)-> {
             long now = Instant.now().toEpochMilli();
-            try {
-                pull(response);
-            } catch (Exception e) {
-                logger.error(e.getMessage(), e);
+            int maxRetries = 3;
+            long[] delays = {5000, 10000, 20000};
+            for (int attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    pull(response);
+                    break;
+                } catch (Exception e) {
+                    if (attempt < maxRetries) {
+                        logger.warn("写入目标库失败，第{}次重试：{}", attempt + 1, e.getMessage());
+                        try { Thread.sleep(delays[attempt]); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
+                    } else {
+                        logger.error("写入目标库失败（已重试{}次）：{}", maxRetries, e.getMessage(), e);
+                    }
+                }
             }
             logger.info("[{}{}]{}, {}ms", key, response.getSuffixName(), response.getTaskSize(), (Instant.now().toEpochMilli() - now));
         });

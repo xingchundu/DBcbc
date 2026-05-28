@@ -79,7 +79,7 @@ public class MappingController extends BaseController {
         return "mapping/customTable";
     }
 
-    @RequestMapping("/get")
+    @PostMapping("/get")
     @ResponseBody
     public RestResult get(@RequestParam(value = "id") String id) {
         try {
@@ -164,6 +164,28 @@ public class MappingController extends BaseController {
     public RestResult stop(@RequestParam(value = "id") String id) {
         try {
             return RestResult.restSuccess(mappingService.stop(id));
+        } catch (Exception e) {
+            logger.error(e.getLocalizedMessage(), e);
+            return RestResult.restFail(e.getMessage());
+        }
+    }
+
+    @PostMapping("/batchStart")
+    @ResponseBody
+    public RestResult batchStart(@RequestParam(value = "ids") String ids) {
+        try {
+            return RestResult.restSuccess(mappingService.batchStart(ids));
+        } catch (Exception e) {
+            logger.error(e.getLocalizedMessage(), e);
+            return RestResult.restFail(e.getMessage());
+        }
+    }
+
+    @PostMapping("/batchStop")
+    @ResponseBody
+    public RestResult batchStop(@RequestParam(value = "ids") String ids) {
+        try {
+            return RestResult.restSuccess(mappingService.batchStop(ids));
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);
             return RestResult.restFail(e.getMessage());

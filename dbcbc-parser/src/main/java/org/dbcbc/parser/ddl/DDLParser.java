@@ -13,5 +13,7 @@ public interface DDLParser {
 
     DDLConfig parse(ConnectorInstance connectorInstance, ConnectorService connectorService, TableGroup tableGroup, String sql) throws JSQLParserException;
 
+    DDLConfig parse(ConnectorInstance connectorInstance, ConnectorService connectorService, TableGroup tableGroup, String sql, String sourceConnectorType) throws JSQLParserException;
+
     void refreshFiledMappings(TableGroup tableGroup, DDLConfig targetDDLConfig);
 }

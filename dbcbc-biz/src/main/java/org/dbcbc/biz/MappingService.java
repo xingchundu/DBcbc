@@ -102,6 +102,20 @@ public interface MappingService {
     String stop(String id);
 
     /**
+     * 批量启动驱动
+     *
+     * @param ids 逗号分隔的驱动ID
+     */
+    String batchStart(String ids);
+
+    /**
+     * 批量停止驱动
+     *
+     * @param ids 逗号分隔的驱动ID
+     */
+    String batchStop(String ids);
+
+    /**
      * 刷新驱动数据源和目标源表
      *
      * @param id

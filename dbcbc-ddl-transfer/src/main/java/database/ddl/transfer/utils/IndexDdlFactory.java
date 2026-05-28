@@ -16,6 +16,34 @@ public final class IndexDdlFactory {
 	}
 
 	/**
+	 * 生成单条删索引 SQL; 不支持时返回 null
+	 */
+	public static String buildDropIndex(DataBaseType targetType, Table table, IndexDefinition idx) {
+		if (idx == null || StringUtil.isBlank(idx.getIndexName()) || table == null) {
+			return null;
+		}
+		String tb = table.getTableName();
+		String in = idx.getIndexName();
+
+		if (DataBaseType.POSTGRESQL.equals(targetType)) {
+			return String.format("DROP INDEX IF EXISTS \"%s\"", in.replace("\"", "\"\""));
+		}
+		if (DataBaseType.MYSQL.equals(targetType)) {
+			return String.format("DROP INDEX `%s` ON `%s`", myEsc(in), myEsc(tb));
+		}
+		if (DataBaseType.ORACLE.equals(targetType)) {
+			return String.format("drop index %s", in).toLowerCase();
+		}
+		if (DataBaseType.DM.equals(targetType)) {
+			return String.format("DROP INDEX %s", qDmIdent(in));
+		}
+		if (DataBaseType.SQLSERVER.equals(targetType)) {
+			return String.format("DROP INDEX [%s] ON [%s]", in, tb);
+		}
+		return null;
+	}
+
+	/**
 	 * 生成单条建索引 SQL; 不支持的类型或跨库过复杂时返回 null(调用方日志中跳过)
 	 */
 	public static String buildCreateIndex(DataBaseType targetType, DataBaseType sourceType, Table table, IndexDefinition idx) {

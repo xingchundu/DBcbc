@@ -106,7 +106,7 @@ public class MonitorController extends BaseController {
     @Resource
     private GBValueFormatter gbValueFormatter;
 
-    @RequestMapping("")
+    @GetMapping("")
     public String index(HttpServletRequest request, ModelMap model) {
         Map<String, String> params = getParams(request);
         model.put("metaId", monitorService.getDefaultMetaId(params));

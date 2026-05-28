@@ -20,11 +20,23 @@
 
 **添加连接时已隐藏的类型**（已有连接不受影响，仍可正常使用）：Kafka、Elasticsearch、Http、SQLite 等。
 
+### 数据验证
+
+| 功能 | 说明 |
+|------|------|
+| **四种验证策略** | 行数对比、行级对比（全量签名比较）、校验和（MD5）、分层校验（三层逐级深入） |
+| **分层校验** | 行数对比 → 分 chunk 校验和 → 异常 chunk 行级采样，漏斗式缩小排查范围 |
+| **异构数据库支持** | 签名计算在 Java 层完成（排序 + MD5），支持 MySQL、Oracle、PostgreSQL、达梦、SQL Server 互验 |
+| **结果持久化** | 验证结果自动写入 `dbcbc_task_data_verification_detail` 表，页面刷新不丢失 |
+| **历史记录** | 详情页支持查看历次验证结果、查看详情（JSON 反序列化渲染）、删除记录 |
+| **Oracle CLOB 兼容** | 分层校验 SQL 使用 `DBMS_LOB.SUBSTR` 替代 `TO_CHAR`，避免 ORA-22835 错误 |
+
 ### DDL 结构迁移
 
 | 功能 | 说明 |
 |------|------|
 | **两阶段迁移** | ① **表结构迁移**（建表/补字段/索引）→ ② **数据库对象迁移**（过程/函数/视图等）；阶段一完成后可继续阶段二，也可仅做表结构 |
+| **索引同步（CREATE/DROP INDEX）** | 表结构迁移时自动同步二级索引：源端新增索引 → 目标端自动创建；源端删除索引 → 目标端自动删除。支持 MySQL、PostgreSQL、Oracle、达梦、SQL Server |
 | **SQL Server → PostgreSQL** | 新增表结构迁移链路（类型映射 `sqlserver2pg`）及对象迁移（视图、序列、存储过程、函数、触发器等 T-SQL→PL/pgSQL 最大努力转换） |
 | **Oracle → 达梦（DM）表结构** | 新增 `oracle2dm` 类型映射与 `ORACLE2DM` 转换器；Oracle 类型（`VARCHAR2`、`NUMBER`、`TIMESTAMP`、`CLOB` 等）按达梦兼容类型转换，未映射类型保留源端精度 |
 | **Oracle 对象迁移** | 阶段二支持 Oracle → PostgreSQL / 达梦 / MySQL，迁移存储过程、函数、触发器、包、视图、同义词、序列等 |
@@ -35,6 +47,88 @@
 | **人工核查提示** | 跨库过程/函数/触发器转换后默认 WARN；Job、权限/角色类对象不自动执行，仅写入日志需人工处理 |
 | **达梦新建用户口令** | Oracle→达梦迁移时，若目标需新建与源同名的 schema 用户，默认口令为 `{用户名}_@123`（达梦不允许口令与登录名相同） |
 
+### 数据验证
+
+数据验证模块（侧栏 **「数据验证」**）用于对比源表与目标表的数据一致性，支持对 **增量同步驱动** 执行四种验证策略。
+
+#### 验证策略
+
+| 策略 | 说明 |
+|------|------|
+| **行数对比** | 对比源表和目标表的行数是否一致，快速发现数据缺失 |
+| **行级对比** | 全量行级对比：逐行签名比较，定位缺失/多余/不一致行并输出字段级差异 |
+| **校验和** | 对比源表和目标表的 MD5 校验和（基于排序后的行签名），快速检测数据差异 |
+| **分层校验** | 三层逐级深入：① 行数对比 → ② 分 chunk 校验和 → ③ 异常 chunk 内行级采样；前一层不通过则终止后续层 |
+
+#### 分层校验详解
+
+分层校验采用漏斗式策略，逐层缩小排查范围：
+
+1. **第一层（COUNT）**：对比源/目标行数；不一致则反查缺失主键（最多显示 20 条），终止后续层
+2. **第二层（Checksum）**：按主键范围分 chunk（每 chunk 10000 行），逐 chunk 计算签名校验和；全部一致则通过，否则标记异常 chunk
+3. **第三层（Sampling）**：仅在异常 chunk 内做精确行级比对，输出字段级差异报告（最多显示 20 条）
+
+#### 结果持久化
+
+验证结果自动写入数据库表 `dbcbc_task_data_verification_detail`，页面刷新后不丢失。支持在详情页查看 **历史记录**，包括查看详情和删除操作。
+
+> 验证结果以 JSON 格式存储在 `CONTENT` 字段中，每条记录对应一张表的一次验证结果。
+
+#### 验证结果存储表（MySQL）
+
+验证结果持久化使用 MySQL 存储，表结构如下：
+
+```sql
+CREATE TABLE `dbcbc_task_data_verification_detail` (
+    `ID` varchar(64) NOT NULL COMMENT '唯一ID',
+    `TASK_ID` varchar(64) NOT NULL COMMENT '关联的驱动ID（mappingId）',
+    `TYPE` varchar(32) NOT NULL COMMENT '验证类型: count / sampling / checksum / cascade',
+    `SOURCE_TABLE_NAME` varchar(100) DEFAULT '' COMMENT '源表名称',
+    `TARGET_TABLE_NAME` varchar(100) DEFAULT '' COMMENT '目标表名称',
+    `CONTENT` text NOT NULL COMMENT '验证结果JSON',
+    `CREATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `UPDATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`ID`),
+    KEY `IDX_UPDATE_CREATE_TIME` (`UPDATE_TIME`,`TYPE`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='数据校验任务明细表';
+```
+
+#### 存储连接配置
+
+验证结果表由系统自动创建，存储后端通过 `application.properties` 配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `dbcbc.storage.type` | 存储类型：`disk`（Lucene 本地文件）或 `mysql` | `disk` |
+| `dbcbc.storage.mysql.url` | MySQL JDBC 连接地址 | `jdbc:mysql://127.0.0.1:3306/dbcbc?...` |
+| `dbcbc.storage.mysql.username` | MySQL 用户名 | `root` |
+| `dbcbc.storage.mysql.password` | MySQL 密码 | `123` |
+| `dbcbc.storage.mysql.driver-class-name` | JDBC 驱动类名 | （可选，自动检测） |
+
+**使用 MySQL 存储验证结果的配置步骤**：
+
+1. 确保 MySQL 实例可访问，建议创建专用数据库（默认 `dbcbc`）
+2. 修改 `conf/application.properties`，将 `dbcbc.storage.type` 改为 `mysql`：
+   ```properties
+   dbcbc.storage.type=mysql
+   dbcbc.storage.mysql.url=jdbc:mysql://your-mysql-host:3306/dbcbc?rewriteBatchedStatements=true&characterEncoding=UTF8&serverTimezone=Asia/Shanghai
+   dbcbc.storage.mysql.username=your_user
+   dbcbc.storage.mysql.password=your_password
+   ```
+3. 重启服务，系统自动创建 `dbcbc_task_data_verification_detail` 表（及其他系统表）
+
+> **注意**：当 `dbcbc.storage.type=disk` 时，验证结果存储在本地 Lucene 索引（`data/` 目录）中，不依赖 MySQL。两种模式功能一致，但 MySQL 模式便于运维管理和数据迁移。
+
+#### 使用说明
+
+1. 在 **驱动管理** 中配置增量同步驱动（源 → 目标）
+2. 打开 **数据验证**，选择目标驱动
+3. 选择验证策略，点击 **「开始验证」**
+4. 验证过程中可实时查看进度和结果
+5. 验证完成后，点击 **「历史记录」** 查看历次验证结果
+
+---
+
 ### 达梦（DM）增量同步 → PostgreSQL
 
 | 功能 | 说明 |
@@ -44,6 +138,51 @@
 | **配置方式** | 连接管理配置 DM 源 + PG 目标 → 驱动管理选择 **增量**、策略 **日志** → 配置表映射后启动 |
 
 > 说明：定时增量（timing）策略对达梦原本可用；本次主要补齐 **日志增量**（log）。跨库 DDL 自动同步仍不支持，仅同步 DML 变更。
+
+### 错误重试
+
+| 功能 | 说明 |
+|------|------|
+| **增量同步启动重试** | 增量同步驱动启动失败时自动重试最多 3 次（间隔 5s / 10s / 20s），避免瞬时网络异常导致同步永久终止 |
+| **全量同步表级重试** | 全量同步中单表失败时自动重试该表最多 3 次，失败后跳过继续下一张表，不再中断整个同步流程 |
+| **增量写入重试** | 增量数据写入目标库失败时自动重试最多 3 次，避免瞬时数据库异常导致数据静默丢失 |
+
+### 批量操作
+
+| 功能 | 说明 |
+|------|------|
+| **驱动批量启动** | 驱动列表支持复选框多选，一键批量启动多个驱动，逐个执行并返回成功/失败统计 |
+| **驱动批量停止** | 驱动列表支持复选框多选，一键批量停止多个运行中的驱动 |
+| **表组批量添加** | 驱动编辑页支持多选源表和目标表，一次添加多组映射关系（已有功能） |
+| **表组批量删除** | 驱动编辑页表组列表支持复选框全选/多选，一键删除多个表组（已有功能） |
+
+### API 文档（Swagger/OpenAPI）
+
+| 功能 | 说明 |
+|------|------|
+| **OpenAPI 3.0 规范** | 自动生成 JSON 格式的 OpenAPI 规范文件，地址：`/v3/api-docs` |
+| **Swagger UI** | 交互式 API 文档界面，地址：`/swagger-ui.html`，支持在线测试接口 |
+| **接口覆盖** | 自动扫描所有 Controller 端点：连接管理、驱动管理、表组管理、DDL 迁移、数据验证、监控等 |
+| **无侵入** | 基于现有 `@RequestMapping`/`@PostMapping`/`@GetMapping` 注解自动生成，无需修改已有代码 |
+
+**访问方式**：启动服务后，浏览器打开 `http://127.0.0.1:18686/swagger-ui.html`
+
+### 同步延迟监控
+
+| 功能 | 说明 |
+|------|------|
+| **实时延迟展示** | 驱动列表新增"同步延迟"列，实时展示每个驱动距上次同步批次的时间差 |
+| **颜色标识** | 绿色（< 30秒）：同步正常；黄色（30秒~5分钟）：存在延迟；红色（> 5分钟）：延迟较高 |
+| **自动刷新** | 驱动列表每 5 秒自动刷新，延迟数据实时更新 |
+| **未运行驱动** | 停止状态的驱动显示为灰色 "--" |
+
+### 操作审计日志
+
+| 功能 | 说明 |
+|------|------|
+| **操作人记录** | 所有日志自动记录操作人用户名（从 Spring Security 获取），非登录操作记录为 `system` |
+| **关键操作覆盖** | 连接器/驱动/表组的增删改查、驱动启停、DDL 迁移（表结构+对象）、数据验证、系统配置修改、RSA/API 密钥生成、配置导入导出等均有日志记录 |
+| **日志查询** | 监控页面日志表格支持按关键字搜索、展示操作人列、相对时间显示 |
 
 > 项目地址
 
@@ -67,10 +206,27 @@
 
 在 Web 侧提供 **「DDL迁移」** 入口（侧栏），用于在已配置的 **关系型数据库连接** 之间做两阶段迁移（以连接管理中的连接器为源与目标）：
 
-- **阶段一**：表结构迁移（建表/补字段/索引，不迁移业务数据）
+- **阶段一**：表结构迁移（建表/补字段/索引同步，不迁移业务数据）
 - **阶段二**：数据库对象迁移（存储过程、函数、触发器、视图、序列等）
 
 **支持路径**：Oracle → PostgreSQL / 达梦 / MySQL、**SQL Server → PostgreSQL**。
+
+### 索引同步（CREATE/DROP INDEX）
+
+阶段一表结构迁移时，自动同步源表与目标表的二级索引（非主键索引）：
+
+| 场景 | 行为 | 支持的数据库 |
+|------|------|-------------|
+| 源端新增索引，目标端不存在 | 自动 **CREATE INDEX** | MySQL、PostgreSQL、Oracle、达梦、SqlServer |
+| 源端删除索引，目标端仍存在 | 自动 **DROP INDEX** | MySQL、PostgreSQL、Oracle、达梦、SqlServer |
+| 源端索引已存在，目标端也存在 | 跳过，不做修改 | — |
+
+**支持的索引类型**：普通索引、唯一索引、全文索引（FULLTEXT）、空间索引（SPATIAL）、位图索引（BITMAP，Oracle/达梦）、GIN/GiST/BRIN/Hash（PostgreSQL）。
+
+**注意事项**：
+- 索引同步仅在阶段一（表结构迁移）时执行，与建表/补字段同一流程
+- Oracle 函数索引、表达式索引等含不可迁移列的索引会跳过并记录 WARN 日志
+- 达梦会自动过滤 Oracle 系统列（`sys_nc\d+$`）相关的索引列
 
 迁移过程可在页面查看执行日志；**ERROR 为红色、WARN 为蓝色、SUCCESS 为绿色**；阶段一完成后显示 **源库/目标库对象总数（表、索引）**；阶段二完成后显示 **成功/警告/失败/跳过/合计** 统计。
 

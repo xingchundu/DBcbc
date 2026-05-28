@@ -146,6 +146,7 @@ public class OracleListener extends AbstractDatabaseListener {
                 DeleteSql parser = new DeleteSql(delete, tableFiledMap.get(tableName));
                 trySendEvent(new RowChangedEvent(tableName, ConnectorConstant.OPERTION_DELETE, parser.parseColumns(), null, event.getScn()));
             }
+            return;
         }
 
         if (statement instanceof Alter) {

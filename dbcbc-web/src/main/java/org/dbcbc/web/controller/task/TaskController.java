@@ -153,7 +153,7 @@ public class TaskController extends BaseController {
     /**
      * 删除任务
      */
-    @GetMapping("/delete")
+    @PostMapping("/delete")
     @ResponseBody
     public RestResult delete(String taskId) {
         try {
@@ -223,7 +223,7 @@ public class TaskController extends BaseController {
             return RestResult.restSuccess(taskService.result(params));
         } catch (Exception e) {
             log.error("查询任务结果失败", e);
-            return RestResult.restSuccess(new Paging(0, 0));
+            return RestResult.restFail(e.getMessage());
         }
     }
 

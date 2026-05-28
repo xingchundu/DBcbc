@@ -117,8 +117,29 @@ public final class FullPuller extends AbstractPuller implements ApplicationListe
         flush(task);
 
         int i = task.getTableGroupIndex();
+        int maxRetries = 3;
+        long[] delays = {5000, 10000, 20000};
         while (i < list.size()) {
-            parserComponent.execute(task, mapping, list.get(i), executor);
+            TableGroup tableGroup = list.get(i);
+            boolean success = false;
+            for (int attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    parserComponent.execute(task, mapping, tableGroup, executor);
+                    success = true;
+                    break;
+                } catch (Exception e) {
+                    if (attempt < maxRetries) {
+                        logger.warn("表{}同步失败，第{}次重试：{}", tableGroup.getSourceTable().getName(), attempt + 1, e.getMessage());
+                        logService.log(LogType.TableGroupLog.FULL_FAILED,
+                            String.format("表%s同步失败（第%d次重试）：%s", tableGroup.getSourceTable().getName(), attempt + 1, e.getMessage()));
+                        try { Thread.sleep(delays[attempt]); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); i = list.size(); break; }
+                    } else {
+                        logger.error("表{}重试{}次后仍失败", tableGroup.getSourceTable().getName(), maxRetries, e);
+                        logService.log(LogType.TableGroupLog.FULL_FAILED,
+                            String.format("表%s同步失败（已重试%d次）：%s", tableGroup.getSourceTable().getName(), maxRetries, e.getMessage()));
+                    }
+                }
+            }
             if (!task.isRunning()) {
                 break;
             }

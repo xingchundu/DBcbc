@@ -66,7 +66,7 @@ public class DiskQueryHelper {
                 break;
         }
         if (query == null) {
-            throw new StorageException("Unsupported method newLessThan.");
+            throw new StorageException("Unsupported method newGreaterThan.");
         }
         return query;
     }

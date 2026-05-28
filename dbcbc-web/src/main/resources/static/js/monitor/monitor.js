@@ -94,11 +94,11 @@ function bindQueryDataEvent() {
             return `
                 <tr>
                     <td>${index}</td>
-                    <td>${d.targetTableName}</td>
-                    <td>${d.event}</td>
+                    <td>${escapeHtml(d.targetTableName || '')}</td>
+                    <td>${escapeHtml(d.event || '')}</td>
                     <td>${renderDataState(d.success)}</td>
                     <td>
-                        <span class="hover-underline cursor-pointer data-error">${d.error || ''}</span>
+                        <span class="hover-underline cursor-pointer data-error">${escapeHtml(d.error || '')}</span>
                     </td>
                     <td>${formatDate(d.createTime)}</td>
                     <td>
@@ -194,7 +194,8 @@ function bindQueryLogEvent() {
             return `
                 <tr>
                     <td>${index}</td>
-                    <td><span class="hover-underline cursor-pointer log-detail">${row.json || ''}</span></td>
+                    <td><span class="hover-underline cursor-pointer log-detail">${escapeHtml(row.json || '')}</span></td>
+                    <td>${row.user || ''}</td>
                     <td>${formatRelativeTime(row.createTime || '')}</td>
                 </tr>
             `;

@@ -96,10 +96,17 @@ public class HttpConnector implements ConnectorService<HttpConnectorInstance, Ht
     @Override
     public boolean isAlive(HttpConnectorInstance connectorInstance) {
         try {
-            return true;
+            String url = connectorInstance.getServiceUrl();
+            if (StringUtil.isBlank(url)) {
+                return false;
+            }
+            org.apache.http.client.methods.HttpHead request = new org.apache.http.client.methods.HttpHead(url);
+            try (org.apache.http.client.methods.CloseableHttpResponse response = connectorInstance.getConnection().execute(request)) {
+                return response.getStatusLine().getStatusCode() < 500;
+            }
         } catch (Exception e) {
-            logger.warn(e.getMessage(), e);
-            throw new HttpException(e);
+            logger.warn("HTTP连接检测失败: {}", e.getMessage());
+            return false;
         }
     }
 

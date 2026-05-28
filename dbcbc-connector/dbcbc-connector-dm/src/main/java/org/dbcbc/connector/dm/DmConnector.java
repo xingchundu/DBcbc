@@ -213,8 +213,10 @@ public final class DmConnector extends AbstractDatabaseConnector {
         StringBuilder sql = new StringBuilder(config.getDatabase().generateUniqueCode());
         buildMergeHeader(sql, config, context);
 
-        sql.append("WHEN MATCHED THEN UPDATE SET ");
-        sql.append(StringUtil.join(context.updateSets, StringUtil.COMMA)).append(" ");
+        if (!context.updateSets.isEmpty()) {
+            sql.append("WHEN MATCHED THEN UPDATE SET ");
+            sql.append(StringUtil.join(context.updateSets, StringUtil.COMMA)).append(" ");
+        }
 
         buildInsertClause(sql, context);
 

@@ -42,8 +42,17 @@ public final class PostgreSQLTimestampType extends TimestampType {
     @Override
     protected Timestamp merge(Object val, Field field) {
         if (val instanceof OffsetDateTime) {
-            OffsetDateTime offsetDateTime = (OffsetDateTime) val;
-            return Timestamp.from(offsetDateTime.toInstant());
+            return Timestamp.from(((OffsetDateTime) val).toInstant());
+        }
+        if (val instanceof String) {
+            String str = (String) val;
+            if ("0000-00-00 00:00:00".equals(str) || "0000-00-00".equals(str)) {
+                return null;
+            }
+            return Timestamp.valueOf(str);
+        }
+        if (val instanceof java.util.Date) {
+            return new Timestamp(((java.util.Date) val).getTime());
         }
         return throwUnsupportedException(val, field);
     }

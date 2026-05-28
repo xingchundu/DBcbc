@@ -119,21 +119,22 @@ public class Shard {
     }
 
     public void close() throws IOException {
-        indexWriter.commit();
-        indexReader.close();
-        indexWriter.close();
+        if (indexWriter != null) {
+            indexWriter.commit();
+            indexWriter.close();
+        }
+        if (indexReader != null) {
+            indexReader.close();
+        }
     }
 
     public IndexSearcher getSearcher() throws IOException {
         // 复用索引读取器
-        IndexReader changeReader = DirectoryReader.openIfChanged((DirectoryReader) indexReader, indexWriter, true);
-        if (null != changeReader) {
-            indexReader.close();
-            indexReader = null;
-            synchronized (LOCK) {
-                if (null == indexReader) {
-                    indexReader = changeReader;
-                }
+        synchronized (LOCK) {
+            IndexReader changeReader = DirectoryReader.openIfChanged((DirectoryReader) indexReader, indexWriter, true);
+            if (null != changeReader) {
+                indexReader.close();
+                indexReader = changeReader;
             }
         }
         return new IndexSearcher(indexReader);

@@ -88,10 +88,12 @@ public class PostgreSqlGenerator extends Generator {
 			stringBuilder.append(" ").append("not null");
 		}
 
-		// 暂时注释掉默认值
-//		if (column.hasDefault()) {
-//			stringBuilder.append(" default ").append(column.getDefaultDefine());
-//		}
+		boolean isAutoIncrement = column.getExtra() != null && column.getExtra().toLowerCase().contains("auto_increment");
+		if (isAutoIncrement) {
+			stringBuilder.append(" GENERATED ALWAYS AS IDENTITY");
+		} else if (column.hasDefault()) {
+			stringBuilder.append(" default ").append(column.getDefaultDefine());
+		}
 
 		return stringBuilder.toString();
 	}
@@ -101,12 +103,14 @@ public class PostgreSqlGenerator extends Generator {
 		List<Column> columns = tableDefine.getColumns();
 		for (Column column : columns) {
 			if (!StringUtil.isBlank(column.getColumnComment())) {
-				stringBuilder.append("COMMENT ON COLUMN \"").append(tableDefine.getTableName()).append("\".\"").append(column.getColumnName()).append("\" IS '").append(column.getColumnComment())
+				String escapedComment = column.getColumnComment().replace("'", "''");
+				stringBuilder.append("COMMENT ON COLUMN \"").append(tableDefine.getTableName()).append("\".\"").append(column.getColumnName()).append("\" IS '").append(escapedComment)
 						.append("';");
 			}
 		}
 		if (!StringUtil.isBlank(tableDefine.getTableComment())) {
-			stringBuilder.append("COMMENT ON TABLE \"").append(tableDefine.getTableName()).append("\" IS '").append(tableDefine.getTableComment()).append("'");
+			String escapedComment = tableDefine.getTableComment().replace("'", "''");
+			stringBuilder.append("COMMENT ON TABLE \"").append(tableDefine.getTableName()).append("\" IS '").append(escapedComment).append("'");
 		}
 		return stringBuilder.toString();
 	}
@@ -184,7 +188,7 @@ public class PostgreSqlGenerator extends Generator {
 			Column targetColumn = targetTableDefine.getColumnsMap().get(columnName);
 			if (targetColumn == null) {
 				// 字段不存在直接添加
-				stringBuilder.append("ALTER TABLE \"").append(sourceDataBaseDefine.getCatalog()).append("\".\"public\".\"").append(sourceTableDefine.getTableName()).append("\" ADD COLUMN ").append(columnName).append(" ").append(sourceColumn.getFinalConvertDataType())
+				stringBuilder.append("ALTER TABLE \"").append(sourceTableDefine.getTableName()).append("\" ADD COLUMN ").append(columnName).append(" ").append(sourceColumn.getFinalConvertDataType())
 						.append(" ");
 				if (!sourceColumn.isNullAble()) {
 					stringBuilder.append("NOT NULL");
@@ -194,7 +198,7 @@ public class PostgreSqlGenerator extends Generator {
 				stringBuilder.append(";");
 
 				if (!StringUtil.isBlank(sourceColumn.getColumnComment())) {
-					stringBuilder.append("COMMENT ON COLUMN \"").append(sourceDataBaseDefine.getCatalog()).append("\".\"public\".\"").append(sourceTableDefine.getTableName()).append("\" IS '").append(sourceColumn.getColumnComment()).append("';");
+					stringBuilder.append("COMMENT ON COLUMN \"").append(sourceDataBaseDefine.getCatalog()).append("\".\"public\".\"").append(sourceTableDefine.getTableName()).append("\".\"").append(columnName).append("\" IS '").append(sourceColumn.getColumnComment()).append("';");
 				}
 			} else {
 				if (sourceColumn.equals(targetColumn)) {

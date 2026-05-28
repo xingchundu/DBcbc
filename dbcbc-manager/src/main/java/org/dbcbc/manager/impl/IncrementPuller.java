@@ -110,20 +110,33 @@ public final class IncrementPuller extends AbstractPuller implements Application
         Assert.notNull(meta, "Meta不能为空.");
 
         Thread worker = new Thread(()-> {
-            try {
-                map.computeIfAbsent(metaId, k-> {
-                    logger.info("开始增量同步：{}, {}", metaId, mapping.getName());
-                    long now = Instant.now().toEpochMilli();
-                    meta.setBeginTime(now);
-                    meta.setEndTime(now);
-                    profileComponent.editConfigModel(meta);
-                    tableGroupContext.put(mapping, list);
-                    return getListener(mapping, connector, targetConnector, list, meta);
-                }).start();
-            } catch (Exception e) {
-                close(metaId);
-                logService.log(LogType.TableGroupLog.INCREMENT_FAILED, String.format("启动驱动失败：[%s], %s", mapping.getName(), e.getMessage()));
-                logger.error("运行异常，结束增量同步：{}", metaId, e);
+            int maxRetries = 3;
+            long[] delays = {5000, 10000, 20000};
+            for (int attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    map.computeIfAbsent(metaId, k-> {
+                        logger.info("开始增量同步：{}, {}", metaId, mapping.getName());
+                        long now = Instant.now().toEpochMilli();
+                        meta.setBeginTime(now);
+                        meta.setEndTime(now);
+                        profileComponent.editConfigModel(meta);
+                        tableGroupContext.put(mapping, list);
+                        return getListener(mapping, connector, targetConnector, list, meta);
+                    }).start();
+                    return;
+                } catch (Exception e) {
+                    close(metaId);
+                    if (attempt < maxRetries) {
+                        logger.warn("增量同步启动失败，第{}次重试，{}ms后重试：{}", attempt + 1, delays[attempt], e.getMessage());
+                        logService.log(LogType.TableGroupLog.INCREMENT_FAILED,
+                            String.format("启动驱动失败（第%d次重试）：[%s], %s", attempt + 1, mapping.getName(), e.getMessage()));
+                        try { Thread.sleep(delays[attempt]); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); return; }
+                    } else {
+                        logService.log(LogType.TableGroupLog.INCREMENT_FAILED,
+                            String.format("启动驱动失败（已重试%d次）：[%s], %s", maxRetries, mapping.getName(), e.getMessage()));
+                        logger.error("重试{}次后仍失败，结束增量同步：{}", maxRetries, metaId, e);
+                    }
+                }
             }
         });
         worker.setName("increment-worker-" + mapping.getId());
@@ -148,8 +161,11 @@ public final class IncrementPuller extends AbstractPuller implements Application
     @Override
     public void onApplicationEvent(RefreshOffsetEvent event) {
         ChangedOffset offset = event.getChangedOffset();
-        if (offset != null && map.containsKey(offset.getMetaId())) {
-            map.get(offset.getMetaId()).refreshEvent(offset);
+        if (offset != null) {
+            Listener listener = map.get(offset.getMetaId());
+            if (listener != null) {
+                listener.refreshEvent(offset);
+            }
         }
     }
 

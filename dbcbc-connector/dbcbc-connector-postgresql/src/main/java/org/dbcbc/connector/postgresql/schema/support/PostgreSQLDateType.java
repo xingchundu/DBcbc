@@ -40,6 +40,16 @@ public final class PostgreSQLDateType extends DateType {
 
     @Override
     protected Date merge(Object val, Field field) {
+        if (val instanceof String) {
+            String str = (String) val;
+            if ("0000-00-00".equals(str) || "0000-00-00 00:00:00".equals(str)) {
+                return null;
+            }
+            return Date.valueOf(str);
+        }
+        if (val instanceof java.util.Date) {
+            return new Date(((java.util.Date) val).getTime());
+        }
         return throwUnsupportedException(val, field);
     }
 }

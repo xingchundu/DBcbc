@@ -91,7 +91,8 @@ public class MySqlGenerator extends Generator {
 //		}
 
 		if (!StringUtil.isBlank(column.getColumnComment())) {
-			stringBuilder.append(" COMMENT '").append(column.getColumnComment()).append("'");
+			String escapedComment = column.getColumnComment().replace("'", "''");
+			stringBuilder.append(" COMMENT '").append(escapedComment).append("'");
 		}
 
 		return stringBuilder.toString();

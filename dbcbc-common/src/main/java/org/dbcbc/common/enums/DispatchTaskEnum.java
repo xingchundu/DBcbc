@@ -16,7 +16,10 @@ public enum DispatchTaskEnum {
     MAPPING_COUNT("统计驱动总数"),
 
     /* 统计驱动表总数 */
-    TABLE_GROUP_COUNT("统计驱动表总数");
+    TABLE_GROUP_COUNT("统计驱动表总数"),
+
+    /* 数据验证 */
+    DATA_VERIFY("数据验证");
 
     DispatchTaskEnum(String name) {
         this.name = name;

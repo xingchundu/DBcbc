@@ -5,8 +5,6 @@ package org.dbcbc.connector.oracle.geometry;
 
 import oracle.sql.NUMBER;
 
-import oracle.sql.NUMBER;
-
 import java.sql.SQLException;
 
 class SdoPickler {

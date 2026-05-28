@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:th="http://www.thymeleaf.org" lang="zh-CN">
+
+<!-- 数据验证 - 详情页 -->
+<div class="form-container">
+    <div class="card-header">
+        <h3 class="card-title">
+            <span class="cursor-pointer text-tertiary" onclick="doLoader('/verify/list')" title="返回列表">
+                <i class="fa fa-arrow-left"></i>
+            </span>
+            数据验证
+        </h3>
+    </div>
+    <div class="card-body">
+        <!-- 驱动信息 -->
+        <div class="flex items-center mb-3 p-3 rounded" style="background: var(--bg-secondary);">
+            <img draggable="false" class="mr-2" th:src="@{'/img/' + ${mapping.sourceConnector.config.connectorType} + '.png'}" style="width: 32px; height: 32px;" alt="">
+            <span class="mr-2" th:text="${mapping.sourceConnector.name}"></span>
+            <i class="fa fa-angle-double-right mx-2 text-tertiary"></i>
+            <img draggable="false" class="mr-2" th:src="@{'/img/' + ${mapping.targetConnector.config.connectorType} + '.png'}" style="width: 32px; height: 32px;" alt="">
+            <span class="mr-3" th:text="${mapping.targetConnector.name}"></span>
+            <span class="badge badge-info" th:text="${mapping.name}"></span>
+        </div>
+
+        <!-- 验证策略选择 -->
+        <div class="flex items-center">
+            <label class="mr-3 text-secondary" style="white-space:nowrap;">验证策略:</label>
+            <div class="flex items-center mr-4">
+                <label class="verify-type-label active" data-type="count">
+                    <i class="fa fa-list-ol"></i> 行数对比
+                </label>
+                <label class="verify-type-label" data-type="sampling">
+                    <i class="fa fa-search"></i> 行级对比
+                </label>
+                <label class="verify-type-label" data-type="checksum">
+                    <i class="fa fa-lock"></i> 校验和
+                </label>
+                <label class="verify-type-label" data-type="cascade">
+                    <i class="fa fa-sitemap"></i> 分层校验
+                </label>
+            </div>
+            <button class="btn btn-primary btn-sm" id="startVerifyBtn">
+                <i class="fa fa-play"></i> 开始验证
+            </button>
+            <button class="btn btn-outline btn-sm ml-2" id="stopVerifyBtn" style="display:none;">
+                <i class="fa fa-stop"></i> 停止
+            </button>
+            <button class="btn btn-outline btn-sm ml-2" id="historyBtn">
+                <i class="fa fa-history"></i> 历史记录
+            </button>
+        </div>
+
+        <!-- 策略说明 -->
+        <div class="mt-2 mb-3 text-xs text-tertiary" id="verifyTypeDesc">对比源表和目标表的行数是否一致</div>
+    </div>
+</div>
+
+<!-- 验证结果 -->
+<div id="verifyResultPanel" class="form-container mt-3" style="display:none;">
+    <div class="card-header">
+        <h3 class="card-title">
+            <span class="mr-2">验证结果</span>
+            <span id="verifyStatusBadge"></span>
+            <span class="float-right text-sm text-tertiary" id="verifyElapsed"></span>
+        </h3>
+    </div>
+    <div class="card-body">
+        <!-- 进度条 -->
+        <div class="mb-3" id="verifyProgressBar" style="display:none;">
+            <div class="flex items-center justify-between mb-1">
+                <span class="text-sm text-secondary" id="verifyProgressText">进度: 0 / 0</span>
+            </div>
+            <div style="height:6px;background:var(--bg-quaternary);border-radius:3px;overflow:hidden;">
+                <div id="verifyProgressFill" style="height:100%;width:0%;background:linear-gradient(90deg,var(--color-primary),#40a9ff);transition:width 0.3s;border-radius:3px;"></div>
+            </div>
+        </div>
+
+        <!-- 结果表格 -->
+        <table class="table" id="countResultTable">
+            <thead>
+            <tr>
+                <th></th>
+                <th>源表</th>
+                <th>目标表</th>
+                <th>源表行数</th>
+                <th>目标表行数</th>
+                <th>行数匹配</th>
+            </tr>
+            </thead>
+            <tbody id="countResultBody"></tbody>
+        </table>
+
+        <!-- 采样结果表格 -->
+        <table class="table" id="samplingResultTable" style="display:none;">
+            <thead>
+            <tr>
+                <th></th>
+                <th>源表</th>
+                <th>目标表</th>
+                <th>源表行数</th>
+                <th>目标表行数</th>
+                <th>对比行数</th>
+                <th>不匹配数</th>
+                <th>结果</th>
+            </tr>
+            </thead>
+            <tbody id="samplingResultBody"></tbody>
+        </table>
+
+        <!-- 校验和结果表格 -->
+        <table class="table" id="checksumResultTable" style="display:none;">
+            <thead>
+            <tr>
+                <th></th>
+                <th>源表</th>
+                <th>目标表</th>
+                <th>源表行数</th>
+                <th>目标表行数</th>
+                <th>行数匹配</th>
+                <th>校验和匹配</th>
+            </tr>
+            </thead>
+            <tbody id="checksumResultBody"></tbody>
+        </table>
+
+        <!-- 分层校验结果 -->
+        <div id="cascadeResultPanel" style="display:none;">
+            <div id="cascadeResultBody"></div>
+        </div>
+
+        <!-- 不匹配详情 -->
+        <div id="mismatchDetailPanel" style="display:none;" class="mt-3">
+            <h4 class="mb-2 text-sm"><i class="fa fa-exclamation-triangle" style="color:var(--color-warning);"></i> 不匹配详情</h4>
+            <div id="mismatchDetailContent" style="max-height:300px;overflow-y:auto;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 历史记录面板 -->
+<div id="historyPanel" class="form-container mt-3" style="display:none;">
+    <div class="card-header">
+        <h3 class="card-title">
+            <span class="cursor-pointer text-tertiary mr-2" onclick="$('#historyPanel').hide();$('#verifyResultPanel').show();" title="返回验证结果">
+                <i class="fa fa-arrow-left"></i>
+            </span>
+            验证历史记录
+        </h3>
+    </div>
+    <div class="card-body">
+        <table class="table" id="historyTable">
+            <thead>
+            <tr>
+                <th>验证类型</th>
+                <th>源表</th>
+                <th>目标表</th>
+                <th>创建时间</th>
+                <th>操作</th>
+            </tr>
+            </thead>
+            <tbody id="historyBody"></tbody>
+        </table>
+        <div id="historyPagination" class="flex items-center justify-between mt-3">
+            <span class="text-sm text-tertiary" id="historyPageInfo"></span>
+            <div>
+                <button class="btn btn-outline btn-sm" id="historyPrevBtn" disabled><i class="fa fa-chevron-left"></i> 上一页</button>
+                <button class="btn btn-outline btn-sm ml-1" id="historyNextBtn" disabled>下一页 <i class="fa fa-chevron-right"></i></button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 历史详情弹窗 -->
+<div id="historyDetailModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:80%;max-width:900px;max-height:80vh;background:var(--bg-primary);border-radius:var(--radius-md);overflow:hidden;display:flex;flex-direction:column;">
+        <div class="card-header" style="flex-shrink:0;">
+            <h3 class="card-title">
+                验证详情
+                <span class="float-right cursor-pointer text-tertiary" onclick="$('#historyDetailModal').hide();"><i class="fa fa-times"></i></span>
+            </h3>
+        </div>
+        <div class="card-body" style="overflow-y:auto;flex:1;" id="historyDetailContent">
+        </div>
+    </div>
+</div>
+
+<style>
+.verify-type-label {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    margin-right: 4px;
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    background: var(--bg-primary);
+}
+.verify-type-label:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+}
+.verify-type-label.active {
+    border-color: var(--color-primary);
+    background: rgba(22,93,255,0.06);
+    color: var(--color-primary);
+    font-weight: 500;
+}
+.verify-type-label i {
+    margin-right: 4px;
+}
+.mismatch-card {
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border-secondary);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    font-size: var(--font-size-xs);
+}
+.mismatch-card .pk {
+    color: var(--color-primary);
+    font-weight: 500;
+}
+.mismatch-card .field {
+    color: var(--text-secondary);
+}
+.mismatch-card .val-s {
+    color: var(--color-success);
+}
+.mismatch-card .val-t {
+    color: var(--color-error);
+}
+.cascade-card {
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    margin-bottom: 12px;
+    background: var(--bg-primary);
+}
+.cascade-card-header {
+    padding: 10px 14px;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    font-size: var(--font-size-sm);
+}
+.cascade-layer {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-secondary);
+    font-size: var(--font-size-sm);
+    display: flex;
+    align-items: flex-start;
+}
+.cascade-layer:last-child {
+    border-bottom: none;
+}
+.cascade-layer-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    margin-right: 10px;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+.cascade-layer-icon.pass {
+    background: rgba(82,196,26,0.1);
+    color: var(--color-success);
+}
+.cascade-layer-icon.fail {
+    background: rgba(255,77,79,0.1);
+    color: var(--color-error);
+}
+.cascade-layer-icon.skip {
+    background: var(--bg-tertiary);
+    color: var(--text-tertiary);
+}
+.cascade-layer-body {
+    flex: 1;
+}
+.cascade-detail {
+    margin-top: 6px;
+    padding-left: 34px;
+}
+.cascade-pk-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+.cascade-pk-item {
+    display: inline-block;
+    padding: 2px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    color: var(--color-primary);
+}
+</style>
+
+<script th:inline="javascript">
+$(document).ready(function () {
+    var mappingId = /*[[${mapping.id}]]*/ '';
+    var currentVerifyType = 'count';
+    var pollingTimer = null;
+
+    // 策略切换
+    $('.verify-type-label').on('click', function () {
+        $('.verify-type-label').removeClass('active');
+        $(this).addClass('active');
+        currentVerifyType = $(this).data('type');
+        var descMap = {
+            'count': '对比源表和目标表的行数是否一致',
+            'sampling': '全量行级对比：逐行签名比较，定位缺失/多余/不一致行并输出字段级差异',
+            'checksum': '对比源表和目标表的校验和，快速检测数据差异',
+            'cascade': '三层逐级深入: 行数对比 → 校验和 → 行级采样'
+        };
+        $('#verifyTypeDesc').text(descMap[currentVerifyType] || '');
+    });
+
+    // 开始验证
+    $('#startVerifyBtn').on('click', function () {
+        var btn = $(this);
+        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> 启动中');
+        doPoster('/verify/start', {id: mappingId, verifyType: currentVerifyType}, function (response) {
+            btn.prop('disabled', false).html('<i class="fa fa-play"></i> 开始验证');
+            if (response.success) {
+                bootGrowl('验证任务已启动', 'success');
+                $('#verifyResultPanel').show();
+                $('#stopVerifyBtn').show();
+                showResultTable(currentVerifyType);
+                startPolling();
+            } else {
+                bootGrowl('启动失败: ' + response.message, 'danger');
+            }
+        });
+    });
+
+    // 停止验证
+    $('#stopVerifyBtn').on('click', function () {
+        doPoster('/verify/stop', {id: mappingId}, function (response) {
+            if (response.success) {
+                bootGrowl('验证已停止', 'success');
+            }
+        });
+    });
+
+    function showResultTable(type) {
+        $('#countResultTable, #samplingResultTable, #checksumResultTable').hide();
+        $('#cascadeResultPanel').hide();
+        if (type === 'sampling') {
+            $('#samplingResultTable').show();
+        } else if (type === 'checksum') {
+            $('#checksumResultTable').show();
+        } else if (type === 'cascade') {
+            $('#cascadeResultPanel').show();
+        } else {
+            $('#countResultTable').show();
+        }
+    }
+
+    function startPolling() {
+        if (pollingTimer) clearInterval(pollingTimer);
+        pollingTimer = setInterval(function () {
+            doPoster('/verify/progress', {id: mappingId}, function (response) {
+                if (response.success && response.data) {
+                    renderProgress(response.data);
+                    if (response.data.status !== 'running' && response.data.status !== 'pending') {
+                        clearInterval(pollingTimer);
+                        pollingTimer = null;
+                        $('#stopVerifyBtn').hide();
+                    }
+                }
+            });
+        }, 2000);
+    }
+
+    function renderProgress(progress) {
+        // 状态徽章
+        var statusMap = {
+            'completed': '<span class="badge badge-success"><i class="fa fa-check"></i> 完成</span>',
+            'stopped': '<span class="badge badge-warning"><i class="fa fa-stop"></i> 已停止</span>',
+            'error': '<span class="badge badge-danger"><i class="fa fa-times"></i> 异常</span>',
+            'running': '<span class="badge badge-info"><i class="fa fa-spinner fa-spin"></i> 验证中</span>',
+            'pending': '<span class="badge badge-info"><i class="fa fa-clock-o"></i> 等待中</span>'
+        };
+        $('#verifyStatusBadge').html(statusMap[progress.status] || '');
+
+        // 进度条
+        if (progress.totalTables > 0) {
+            $('#verifyProgressBar').show();
+            var pct = Math.round(progress.completedTables / progress.totalTables * 100);
+            $('#verifyProgressFill').css('width', pct + '%');
+            $('#verifyProgressText').text('进度: ' + progress.completedTables + ' / ' + progress.totalTables + ' 张表');
+        }
+
+        // 耗时
+        if (progress.startTime) {
+            var end = progress.endTime || new Date().getTime();
+            var elapsed = Math.round((end - progress.startTime) / 1000);
+            $('#verifyElapsed').text('耗时 ' + elapsed + ' 秒');
+        }
+
+        // 渲染结果
+        var type = progress.verifyType || 'count';
+        showResultTable(type);
+        if (type === 'sampling') {
+            renderSamplingResults(progress.results || []);
+        } else if (type === 'checksum') {
+            renderChecksumResults(progress.results || []);
+        } else if (type === 'cascade') {
+            renderCascadeResults(progress.cascadeResults || []);
+        } else {
+            renderCountResults(progress.results || []);
+        }
+    }
+
+    function renderCountResults(results) {
+        var tbody = $('#countResultBody');
+        tbody.empty();
+        $.each(results, function (i, r) {
+            var matchHtml = r.status === 'running'
+                ? '<i class="fa fa-spinner fa-spin"></i>'
+                : (r.status === 'error'
+                    ? '<span class="badge badge-danger">异常</span>'
+                    : (r.countMatch
+                        ? '<span class="badge badge-success"><i class="fa fa-check"></i> 一致</span>'
+                        : '<span class="badge badge-danger"><i class="fa fa-times"></i> 不一致</span>'));
+            tbody.append('<tr>' +
+                '<td>' + (i + 1) + '</td>' +
+                '<td>' + escapeHtml(r.sourceTableName) + '</td>' +
+                '<td>' + escapeHtml(r.targetTableName) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.sourceCount) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.targetCount) + '</td>' +
+                '<td>' + matchHtml + '</td>' +
+                '</tr>');
+        });
+    }
+
+    function renderSamplingResults(results) {
+        var tbody = $('#samplingResultBody');
+        tbody.empty();
+        var allMismatches = [];
+        $.each(results, function (i, r) {
+            var resultHtml = r.status === 'running'
+                ? '<i class="fa fa-spinner fa-spin"></i>'
+                : (r.status === 'error'
+                    ? '<span class="badge badge-danger">异常</span>'
+                    : (r.mismatchedRows === 0
+                        ? '<span class="badge badge-success"><i class="fa fa-check"></i> 通过</span>'
+                        : '<span class="badge badge-danger"><i class="fa fa-times"></i> 不通过</span>'));
+            tbody.append('<tr>' +
+                '<td>' + (i + 1) + '</td>' +
+                '<td>' + escapeHtml(r.sourceTableName) + '</td>' +
+                '<td>' + escapeHtml(r.targetTableName) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.sourceCount) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.targetCount) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.sampledRows) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.mismatchedRows) + '</td>' +
+                '<td>' + resultHtml + '</td>' +
+                '</tr>');
+            if (r.mismatches && r.mismatches.length > 0) {
+                allMismatches.push({tableName: r.sourceTableName, mismatches: r.mismatches});
+            }
+        });
+
+        // 渲染不匹配详情
+        if (allMismatches.length > 0) {
+            var html = '';
+            $.each(allMismatches, function (i, group) {
+                html += '<div class="mb-2 text-sm font-bold">' + escapeHtml(group.tableName) + '</div>';
+                $.each(group.mismatches, function (j, m) {
+                    var pkStr = '';
+                    if (m.primaryKey) {
+                        var parts = [];
+                        $.each(m.primaryKey, function (k, v) { parts.push(k + '=' + v); });
+                        pkStr = parts.join(', ');
+                    }
+                    if (m.fieldName === '*') {
+                        html += '<div class="mismatch-card"><span class="pk">[' + escapeHtml(pkStr) + ']</span> <span class="field">行</span> <span class="val-s">源: ' + escapeHtml(String(m.sourceValue)) + '</span> / <span class="val-t">目标: ' + escapeHtml(String(m.targetValue)) + '</span></div>';
+                    } else {
+                        html += '<div class="mismatch-card"><span class="pk">[' + escapeHtml(pkStr) + ']</span> <span class="field">字段 ' + escapeHtml(m.fieldName) + '</span> <span class="val-s">源: ' + escapeHtml(String(m.sourceValue)) + '</span> / <span class="val-t">目标: ' + escapeHtml(String(m.targetValue)) + '</span></div>';
+                    }
+                });
+            });
+            $('#mismatchDetailContent').html(html);
+            $('#mismatchDetailPanel').show();
+        } else {
+            $('#mismatchDetailPanel').hide();
+        }
+    }
+
+    function renderChecksumResults(results) {
+        var tbody = $('#checksumResultBody');
+        tbody.empty();
+        $.each(results, function (i, r) {
+            var matchHtml = r.status === 'running'
+                ? '<i class="fa fa-spinner fa-spin"></i>'
+                : (r.status === 'error'
+                    ? '<span class="badge badge-danger">异常</span>'
+                    : (r.countMatch
+                        ? '<span class="badge badge-success"><i class="fa fa-check"></i> 一致</span>'
+                        : '<span class="badge badge-danger"><i class="fa fa-times"></i> 不一致</span>'));
+            var checksumHtml = r.status === 'running'
+                ? '-'
+                : (r.checksumMatch
+                    ? '<span class="badge badge-success"><i class="fa fa-check"></i> 一致</span>'
+                    : '<span class="badge badge-danger"><i class="fa fa-times"></i> 不一致</span>');
+            tbody.append('<tr>' +
+                '<td>' + (i + 1) + '</td>' +
+                '<td>' + escapeHtml(r.sourceTableName) + '</td>' +
+                '<td>' + escapeHtml(r.targetTableName) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.sourceCount) + '</td>' +
+                '<td>' + (r.status === 'running' ? '-' : r.targetCount) + '</td>' +
+                '<td>' + matchHtml + '</td>' +
+                '<td>' + checksumHtml + '</td>' +
+                '</tr>');
+        });
+    }
+
+    function renderCascadeResults(results) {
+        var body = $('#cascadeResultBody');
+        body.empty();
+
+        if (!results || results.length === 0) {
+            body.html('<div class="text-center text-tertiary p-3">暂无结果</div>');
+            return;
+        }
+
+        $.each(results, function (i, r) {
+            var card = '<div class="cascade-card">';
+
+            // Card header
+            card += '<div class="cascade-card-header">';
+            card += '<span class="mr-2">' + (i + 1) + '.</span>';
+            card += escapeHtml(r.sourceTableName) + ' → ' + escapeHtml(r.targetTableName);
+            if (r.status === 'running') {
+                card += ' <i class="fa fa-spinner fa-spin ml-2"></i>';
+            } else if (r.status === 'error') {
+                card += ' <span class="badge badge-danger ml-2">异常</span>';
+            }
+            card += '</div>';
+
+            // Layer 1: COUNT
+            var l1Icon, l1Text;
+            if (!r.layer1Pass && r.status !== 'running' && r.status !== 'error') {
+                l1Icon = 'fail';
+                l1Text = '<span class="text-sm"><b>行数对比</b> <span class="badge badge-danger"><i class="fa fa-times"></i> 不一致</span>';
+                l1Text += ' &nbsp; 源: ' + r.sourceCount + ' &nbsp; 目标: ' + r.targetCount + '</span>';
+            } else if (r.layer1Pass) {
+                l1Icon = 'pass';
+                l1Text = '<span class="text-sm"><b>行数对比</b> <span class="badge badge-success"><i class="fa fa-check"></i> 一致</span>';
+                l1Text += ' &nbsp; 源: ' + r.sourceCount + ' &nbsp; 目标: ' + r.targetCount + '</span>';
+            } else {
+                l1Icon = 'skip';
+                l1Text = '<span class="text-sm"><b>行数对比</b> <span class="badge badge-secondary">运行中</span></span>';
+            }
+            card += '<div class="cascade-layer">';
+            card += '<span class="cascade-layer-icon ' + l1Icon + '"><i class="fa ' + (l1Icon === 'pass' ? 'fa-check' : l1Icon === 'fail' ? 'fa-times' : 'fa-clock-o') + '"></i></span>';
+            card += '<div class="cascade-layer-body">' + l1Text;
+
+            // Missing PKs
+            if (r.missingPks && r.missingPks.length > 0) {
+                card += '<div class="cascade-detail">';
+                card += '<div class="text-xs text-tertiary mb-1">缺失主键 (' + r.missingPks.length + '条' + (r.missingPks.length >= 20 ? '，仅显示前20' : '') + '):</div>';
+                card += '<div class="cascade-pk-list">';
+                $.each(r.missingPks, function (j, pk) {
+                    var parts = [];
+                    $.each(pk, function (k, v) { parts.push(k + '=' + escapeHtml(String(v))); });
+                    card += '<span class="cascade-pk-item">[' + parts.join(', ') + ']</span>';
+                });
+                card += '</div></div>';
+            }
+            card += '</div></div>';
+
+            // Layer 2: Checksum
+            var l2Icon, l2Text;
+            if (!r.layer1Pass) {
+                l2Icon = 'skip';
+                l2Text = '<span class="text-sm"><b>校验和</b> <span class="badge badge-secondary">跳过</span> <span class="text-tertiary">(行数不一致)</span></span>';
+            } else if (r.layer2Pass === true) {
+                l2Icon = 'pass';
+                l2Text = '<span class="text-sm"><b>校验和</b> <span class="badge badge-success"><i class="fa fa-check"></i> 一致</span>';
+                l2Text += ' &nbsp; ' + r.totalChunks + ' chunks, 0 异常</span>';
+            } else if (r.layer2Pass === false) {
+                l2Icon = 'fail';
+                l2Text = '<span class="text-sm"><b>校验和</b> <span class="badge badge-danger"><i class="fa fa-times"></i> 不一致</span>';
+                l2Text += ' &nbsp; ' + r.totalChunks + ' chunks, ' + r.abnormalChunks + ' 异常</span>';
+            } else {
+                l2Icon = 'skip';
+                l2Text = '<span class="text-sm"><b>校验和</b> <span class="badge badge-secondary">运行中</span></span>';
+            }
+            card += '<div class="cascade-layer">';
+            card += '<span class="cascade-layer-icon ' + l2Icon + '"><i class="fa ' + (l2Icon === 'pass' ? 'fa-check' : l2Icon === 'fail' ? 'fa-times' : 'fa-clock-o') + '"></i></span>';
+            card += '<div class="cascade-layer-body">' + l2Text + '</div></div>';
+
+            // Layer 3: Sampling
+            var l3Icon, l3Text;
+            if (!r.layer1Pass || r.layer2Pass === true) {
+                l3Icon = 'skip';
+                l3Text = '<span class="text-sm"><b>行级采样</b> <span class="badge badge-secondary">跳过</span>';
+                if (r.layer2Pass === true) l3Text += ' <span class="text-tertiary">(校验和一致)</span>';
+                l3Text += '</span>';
+            } else if (r.layer3Pass === true) {
+                l3Icon = 'pass';
+                l3Text = '<span class="text-sm"><b>行级采样</b> <span class="badge badge-success"><i class="fa fa-check"></i> 通过</span>';
+                l3Text += ' &nbsp; 采样 ' + r.sampledRows + ' 行, 0 不一致</span>';
+            } else if (r.layer3Pass === false) {
+                l3Icon = 'fail';
+                l3Text = '<span class="text-sm"><b>行级采样</b> <span class="badge badge-danger"><i class="fa fa-times"></i> 不通过</span>';
+                l3Text += ' &nbsp; 采样 ' + r.sampledRows + ' 行, ' + r.mismatchedRows + ' 行不一致</span>';
+            } else {
+                l3Icon = 'skip';
+                l3Text = '<span class="text-sm"><b>行级采样</b> <span class="badge badge-secondary">运行中</span></span>';
+            }
+            card += '<div class="cascade-layer">';
+            card += '<span class="cascade-layer-icon ' + l3Icon + '"><i class="fa ' + (l3Icon === 'pass' ? 'fa-check' : l3Icon === 'fail' ? 'fa-times' : 'fa-clock-o') + '"></i></span>';
+            card += '<div class="cascade-layer-body">' + l3Text;
+
+            // Mismatches
+            if (r.mismatches && r.mismatches.length > 0) {
+                card += '<div class="cascade-detail">';
+                card += '<div class="text-xs text-tertiary mb-1">差异详情 (' + r.mismatchedRows + ' 行不一致):</div>';
+                $.each(r.mismatches, function (j, m) {
+                    var pkStr = '';
+                    if (m.primaryKey) {
+                        var parts = [];
+                        $.each(m.primaryKey, function (k, v) { parts.push(k + '=' + escapeHtml(String(v))); });
+                        pkStr = parts.join(', ');
+                    }
+                    if (m.fieldName === '*') {
+                        card += '<div class="mismatch-card"><span class="pk">[' + pkStr + ']</span> <span class="field">行</span> <span class="val-s">源: ' + escapeHtml(String(m.sourceValue)) + '</span> / <span class="val-t">目标: ' + escapeHtml(String(m.targetValue)) + '</span></div>';
+                    } else {
+                        card += '<div class="mismatch-card"><span class="pk">[' + pkStr + ']</span> <span class="field">字段 ' + escapeHtml(m.fieldName) + '</span> <span class="val-s">源: ' + escapeHtml(String(m.sourceValue)) + '</span> / <span class="val-t">目标: ' + escapeHtml(String(m.targetValue)) + '</span></div>';
+                    }
+                });
+                card += '</div>';
+            }
+            card += '</div></div>';
+
+            card += '</div>'; // close cascade-card
+            body.append(card);
+        });
+    }
+
+    // ==================== 历史记录 ====================
+    var historyPageNum = 1;
+    var historyPageSize = 10;
+
+    $('#historyBtn').on('click', function () {
+        $('#verifyResultPanel').hide();
+        $('#historyPanel').show();
+        historyPageNum = 1;
+        loadHistory();
+    });
+
+    function loadHistory() {
+        doPoster('/verify/history', {taskId: mappingId, pageNum: historyPageNum, pageSize: historyPageSize}, function (response) {
+            if (response.success && response.data) {
+                renderHistory(response.data);
+            }
+        });
+    }
+
+    function renderHistory(paging) {
+        var tbody = $('#historyBody');
+        tbody.empty();
+        var data = paging.data || [];
+        var typeMap = {'count': '行数对比', 'sampling': '行级对比', 'checksum': '校验和', 'cascade': '分层校验'};
+        $.each(data, function (i, item) {
+            var typeName = typeMap[item.type] || item.type;
+            var createTime = item.createTime ? new Date(item.createTime).toLocaleString('zh-CN') : '-';
+            tbody.append('<tr>' +
+                '<td><span class="badge badge-info">' + typeName + '</span></td>' +
+                '<td>' + escapeHtml(item.sourceTableName || '') + '</td>' +
+                '<td>' + escapeHtml(item.targetTableName || '') + '</td>' +
+                '<td>' + createTime + '</td>' +
+                '<td>' +
+                    '<button class="btn btn-outline btn-xs mr-1" onclick="viewHistoryDetail(\'' + item.id + '\')"><i class="fa fa-eye"></i> 查看</button>' +
+                    '<button class="btn btn-outline btn-xs btn-danger-outline" onclick="deleteHistoryItem(\'' + item.id + '\')"><i class="fa fa-trash"></i> 删除</button>' +
+                '</td>' +
+                '</tr>');
+        });
+
+        if (data.length === 0) {
+            tbody.append('<tr><td colspan="5" class="text-center text-tertiary">暂无历史记录</td></tr>');
+        }
+
+        // 分页信息
+        var total = paging.total || 0;
+        var totalPages = Math.ceil(total / historyPageSize) || 1;
+        $('#historyPageInfo').text('第 ' + historyPageNum + ' / ' + totalPages + ' 页，共 ' + total + ' 条');
+        $('#historyPrevBtn').prop('disabled', historyPageNum <= 1);
+        $('#historyNextBtn').prop('disabled', historyPageNum >= totalPages);
+    }
+
+    $('#historyPrevBtn').on('click', function () {
+        if (historyPageNum > 1) {
+            historyPageNum--;
+            loadHistory();
+        }
+    });
+
+    $('#historyNextBtn').on('click', function () {
+        historyPageNum++;
+        loadHistory();
+    });
+
+    window.viewHistoryDetail = function (id) {
+        doPoster('/verify/history', {taskId: mappingId, pageNum: 1, pageSize: 1000}, function (response) {
+            if (response.success && response.data && response.data.data) {
+                var item = null;
+                $.each(response.data.data, function (i, d) {
+                    if (d.id === id) { item = d; return false; }
+                });
+                if (item && item.content) {
+                    try {
+                        var result = JSON.parse(item.content);
+                        var html = renderHistoryDetailContent(result, item.type);
+                        $('#historyDetailContent').html(html);
+                        $('#historyDetailModal').show();
+                    } catch (e) {
+                        bootGrowl('解析详情失败', 'danger');
+                    }
+                }
+            }
+        });
+    };
+
+    function renderHistoryDetailContent(result, type) {
+        var html = '<div class="mb-2 text-sm">';
+        html += '<span class="mr-3"><b>源表:</b> ' + escapeHtml(result.sourceTableName || '') + '</span>';
+        html += '<span class="mr-3"><b>目标表:</b> ' + escapeHtml(result.targetTableName || '') + '</span>';
+        html += '<span class="badge ' + (result.status === 'completed' ? 'badge-success' : result.status === 'error' ? 'badge-danger' : 'badge-warning') + '">' + (result.status || '') + '</span>';
+        html += '</div>';
+
+        if (type === 'cascade') {
+            html += renderCascadeDetailCard(result);
+        } else if (type === 'count') {
+            html += '<div class="text-sm">源表行数: <b>' + (result.sourceCount || 0) + '</b>，目标表行数: <b>' + (result.targetCount || 0) + '</b>';
+            html += result.countMatch ? ' <span class="badge badge-success">一致</span>' : ' <span class="badge badge-danger">不一致</span>';
+            html += '</div>';
+        } else if (type === 'checksum') {
+            html += '<div class="text-sm">源表行数: <b>' + (result.sourceCount || 0) + '</b>，目标表行数: <b>' + (result.targetCount || 0) + '</b>';
+            html += result.countMatch ? ' <span class="badge badge-success">行数一致</span>' : ' <span class="badge badge-danger">行数不一致</span>';
+            html += '，校验和: ' + (result.checksumMatch ? '<span class="badge badge-success">一致</span>' : '<span class="badge badge-danger">不一致</span>');
+            html += '</div>';
+        } else if (type === 'sampling') {
+            html += '<div class="text-sm">源表行数: <b>' + (result.sourceCount || 0) + '</b>，目标表行数: <b>' + (result.targetCount || 0) + '</b>';
+            html += '，对比行数: <b>' + (result.sampledRows || 0) + '</b>，不匹配: <b>' + (result.mismatchedRows || 0) + '</b>';
+            html += result.mismatchedRows === 0 ? ' <span class="badge badge-success">通过</span>' : ' <span class="badge badge-danger">不通过</span>';
+            html += '</div>';
+            if (result.mismatches && result.mismatches.length > 0) {
+                html += '<div class="mt-2">';
+                $.each(result.mismatches, function (j, m) {
+                    var pkStr = '';
+                    if (m.primaryKey) {
+                        var parts = [];
+                        $.each(m.primaryKey, function (k, v) { parts.push(k + '=' + escapeHtml(String(v))); });
+                        pkStr = parts.join(', ');
+                    }
+                    html += '<div class="mismatch-card"><span class="pk">[' + pkStr + ']</span> <span class="field">字段 ' + escapeHtml(m.fieldName || '*') + '</span> <span class="val-s">源: ' + escapeHtml(String(m.sourceValue)) + '</span> / <span class="val-t">目标: ' + escapeHtml(String(m.targetValue)) + '</span></div>';
+                });
+                html += '</div>';
+            }
+        }
+        return html;
+    }
+
+    function renderCascadeDetailCard(r) {
+        var card = '<div class="cascade-card" style="margin-top:8px;">';
+        card += '<div class="cascade-card-header">' + escapeHtml(r.sourceTableName || '') + ' → ' + escapeHtml(r.targetTableName || '') + '</div>';
+
+        // Layer 1
+        var l1Icon = r.layer1Pass ? 'pass' : (r.sourceCount !== undefined ? 'fail' : 'skip');
+        card += '<div class="cascade-layer">';
+        card += '<span class="cascade-layer-icon ' + l1Icon + '"><i class="fa ' + (l1Icon === 'pass' ? 'fa-check' : l1Icon === 'fail' ? 'fa-times' : 'fa-clock-o') + '"></i></span>';
+        card += '<div class="cascade-layer-body"><span class="text-sm"><b>行数对比</b> ';
+        card += r.layer1Pass ? '<span class="badge badge-success">一致</span>' : (r.sourceCount !== undefined ? '<span class="badge badge-danger">不一致</span>' : '<span class="badge badge-secondary">跳过</span>');
+        card += ' &nbsp; 源: ' + (r.sourceCount || 0) + ' &nbsp; 目标: ' + (r.targetCount || 0) + '</span>';
+        if (r.missingPks && r.missingPks.length > 0) {
+            card += '<div class="cascade-detail"><div class="text-xs text-tertiary mb-1">缺失主键:</div><div class="cascade-pk-list">';
+            $.each(r.missingPks, function (j, pk) {
+                var parts = [];
+                $.each(pk, function (k, v) { parts.push(k + '=' + escapeHtml(String(v))); });
+                card += '<span class="cascade-pk-item">[' + parts.join(', ') + ']</span>';
+            });
+            card += '</div></div>';
+        }
+        card += '</div></div>';
+
+        // Layer 2
+        var l2Icon = !r.layer1Pass ? 'skip' : (r.layer2Pass === true ? 'pass' : (r.layer2Pass === false ? 'fail' : 'skip'));
+        card += '<div class="cascade-layer">';
+        card += '<span class="cascade-layer-icon ' + l2Icon + '"><i class="fa ' + (l2Icon === 'pass' ? 'fa-check' : l2Icon === 'fail' ? 'fa-times' : 'fa-clock-o') + '"></i></span>';
+        card += '<div class="cascade-layer-body"><span class="text-sm"><b>校验和</b> ';
+        if (!r.layer1Pass) {
+            card += '<span class="badge badge-secondary">跳过</span>';
+        } else if (r.layer2Pass === true) {
+            card += '<span class="badge badge-success">一致</span> &nbsp; ' + (r.totalChunks || 0) + ' chunks, 0 异常';
+        } else if (r.layer2Pass === false) {
+            card += '<span class="badge badge-danger">不一致</span> &nbsp; ' + (r.totalChunks || 0) + ' chunks, ' + (r.abnormalChunks || 0) + ' 异常';
+        } else {
+            card += '<span class="badge badge-secondary">跳过</span>';
+        }
+        card += '</span></div></div>';
+
+        // Layer 3
+        var l3Icon = (!r.layer1Pass || r.layer2Pass === true) ? 'skip' : (r.layer3Pass === true ? 'pass' : (r.layer3Pass === false ? 'fail' : 'skip'));
+        card += '<div class="cascade-layer">';
+        card += '<span class="cascade-layer-icon ' + l3Icon + '"><i class="fa ' + (l3Icon === 'pass' ? 'fa-check' : l3Icon === 'fail' ? 'fa-times' : 'fa-clock-o') + '"></i></span>';
+        card += '<div class="cascade-layer-body"><span class="text-sm"><b>行级采样</b> ';
+        if (!r.layer1Pass || r.layer2Pass === true) {
+            card += '<span class="badge badge-secondary">跳过</span>';
+        } else if (r.layer3Pass === true) {
+            card += '<span class="badge badge-success">通过</span> &nbsp; 采样 ' + (r.sampledRows || 0) + ' 行, 0 不一致';
+        } else if (r.layer3Pass === false) {
+            card += '<span class="badge badge-danger">不通过</span> &nbsp; 采样 ' + (r.sampledRows || 0) + ' 行, ' + (r.mismatchedRows || 0) + ' 行不一致';
+        } else {
+            card += '<span class="badge badge-secondary">跳过</span>';
+        }
+        card += '</span>';
+        if (r.mismatches && r.mismatches.length > 0) {
+            card += '<div class="cascade-detail"><div class="text-xs text-tertiary mb-1">差异详情:</div>';
+            $.each(r.mismatches, function (j, m) {
+                var pkStr = '';
+                if (m.primaryKey) {
+                    var parts = [];
+                    $.each(m.primaryKey, function (k, v) { parts.push(k + '=' + escapeHtml(String(v))); });
+                    pkStr = parts.join(', ');
+                }
+                card += '<div class="mismatch-card"><span class="pk">[' + pkStr + ']</span> <span class="field">字段 ' + escapeHtml(m.fieldName || '*') + '</span> <span class="val-s">源: ' + escapeHtml(String(m.sourceValue)) + '</span> / <span class="val-t">目标: ' + escapeHtml(String(m.targetValue)) + '</span></div>';
+            });
+            card += '</div>';
+        }
+        card += '</div></div>';
+
+        card += '</div>';
+        return card;
+    }
+
+    window.deleteHistoryItem = function (id) {
+        if (!confirm('确定删除此条验证记录？')) return;
+        doPoster('/verify/delete', {id: id}, function (response) {
+            if (response.success) {
+                bootGrowl('删除成功', 'success');
+                loadHistory();
+            } else {
+                bootGrowl('删除失败: ' + response.message, 'danger');
+            }
+        });
+    };
+});
+</script>
+
+</html>

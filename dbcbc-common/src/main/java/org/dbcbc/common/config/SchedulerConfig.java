@@ -1,5 +1,7 @@
 package org.dbcbc.common.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -16,6 +18,8 @@ import java.util.concurrent.RejectedExecutionHandler;
 @Configuration
 @ConfigurationProperties(prefix = "dbcbc.web.scheduler")
 public class SchedulerConfig implements SchedulingConfigurer {
+
+    private static final Logger logger = LoggerFactory.getLogger(SchedulerConfig.class);
 
     /**
      * 工作线程数
@@ -45,10 +49,8 @@ public class SchedulerConfig implements SchedulingConfigurer {
 
     private RejectedExecutionHandler rejectedExecutionHandler() {
         return (r, executor)-> {
-            try {
-                executor.getQueue().put(r);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+            if (!executor.isShutdown()) {
+                logger.warn("调度器队列已满，任务被丢弃，调度器: {}", executor);
             }
         };
     }

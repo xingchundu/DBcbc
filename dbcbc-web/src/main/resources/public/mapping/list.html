@@ -18,6 +18,12 @@
             </div>
             <div class="lg:col-span-2"></div>
             <div class="lg:col-span-2 flex items-center justify-end">
+                <button class="btn btn-success" id="batchStartBtn" disabled="disabled" onclick="batchStartMappings()" style="margin-right:5px;">
+                    <i class="fa fa-play"></i> 批量启动
+                </button>
+                <button class="btn btn-warning" id="batchStopBtn" disabled="disabled" onclick="batchStopMappings()" style="margin-right:5px;">
+                    <i class="fa fa-pause"></i> 批量停止
+                </button>
                 <button class="btn btn-primary" id="addMappingBtn" onclick="doLoader('/mapping/pageAdd')">
                     <i class="fa fa-plus"></i> 添加
                 </button>
@@ -28,12 +34,13 @@
             <thead>
             <tr>
                 <th></th>
+                <th><input type="checkbox" id="mappingCheckboxAll" onclick="toggleAllMappings(this)" /></th>
                 <th>名称</th>
                 <th>同步方案</th>
                 <th>类型</th>
                 <th>结果</th>
                 <th>状态</th>
-                <th>最后同步</th>
+                <th>同步延迟</th>
                 <th>操作</th>
             </tr>
             </thead>
@@ -92,6 +99,55 @@ function deleteMapping(id) {
     });
 }
 
+function toggleAllMappings(checkbox) {
+    const isChecked = checkbox.checked;
+    document.querySelectorAll('.mappingCheckbox').forEach(function(cb) {
+        cb.checked = isChecked;
+    });
+    updateBatchButtons();
+}
+
+function updateBatchButtons() {
+    const checked = document.querySelectorAll('.mappingCheckbox:checked');
+    const hasChecked = checked.length > 0;
+    document.getElementById('batchStartBtn').disabled = !hasChecked;
+    document.getElementById('batchStopBtn').disabled = !hasChecked;
+}
+
+function getSelectedMappingIds() {
+    const ids = [];
+    document.querySelectorAll('.mappingCheckbox:checked').forEach(function(cb) {
+        ids.push(cb.value);
+    });
+    return ids;
+}
+
+function batchStartMappings() {
+    const ids = getSelectedMappingIds();
+    if (ids.length === 0) return;
+    doPoster("/mapping/batchStart", {ids: ids.join(',')}, function(response) {
+        if (response.success) {
+            bootGrowl(response.message, 'success');
+        } else {
+            bootGrowl(response.message, 'danger');
+        }
+        backIndexPage();
+    });
+}
+
+function batchStopMappings() {
+    const ids = getSelectedMappingIds();
+    if (ids.length === 0) return;
+    doPoster("/mapping/batchStop", {ids: ids.join(',')}, function(response) {
+        if (response.success) {
+            bootGrowl(response.message, 'success');
+        } else {
+            bootGrowl(response.message, 'danger');
+        }
+        backIndexPage();
+    });
+}
+
 
 // 页面初始化
 $(document).ready(function() {
@@ -108,6 +164,7 @@ $(document).ready(function() {
             return `
                 <tr>
                     <td>${index}</td>
+                    <td><input type="checkbox" class="mappingCheckbox" value="${mapping.id}" onclick="updateBatchButtons()" /></td>
                     <td title="${escapeHtml(mapping.name)}">
                         <span>${escapeHtml(mapping.name)}</span>
                     </td>
@@ -125,7 +182,7 @@ $(document).ready(function() {
                     <td>${renderModelText(mapping.model)}</td>
                     <td>${renderSyncResult(mapping)}</td>
                     <td>${renderStateText(mapping.meta.state || 0)}</td>
-                    <td>${formatDate(mapping.meta.updateTime || '')}</td>
+                    <td>${renderSyncDelay(mapping)}</td>
                     <td>
                         <div class="flex items-center">
                             <button class="table-action-btn view" title="修改" onclick="doLoader('/mapping/page/edit?id=${mapping.id}')">
@@ -140,7 +197,7 @@ $(document).ready(function() {
                 </tr>
             `;
         },
-        emptyHtml:'<td colspan="7" class="text-center"><i class="fa fa-exchange empty-icon"></i><p class="empty-text">暂无驱动</p><p class="empty-description">点击"添加"按钮创建第一个驱动</p></td>'
+        emptyHtml:'<td colspan="8" class="text-center"><i class="fa fa-exchange empty-icon"></i><p class="empty-text">暂无驱动</p><p class="empty-description">点击"添加"按钮创建第一个驱动</p></td>'
     });
 
     // 搜索框输入事件

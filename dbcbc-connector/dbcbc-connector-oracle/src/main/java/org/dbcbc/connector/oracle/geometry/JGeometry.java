@@ -10,13 +10,6 @@ import oracle.sql.NUMBER;
 import oracle.sql.STRUCT;
 import oracle.sql.StructDescriptor;
 
-import oracle.sql.ARRAY;
-import oracle.sql.ArrayDescriptor;
-import oracle.sql.Datum;
-import oracle.sql.NUMBER;
-import oracle.sql.STRUCT;
-import oracle.sql.StructDescriptor;
-
 import java.awt.Shape;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.GeneralPath;

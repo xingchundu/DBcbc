@@ -13,7 +13,7 @@
     "BIGINT": "NUMERIC(20)",
     "DOUBLE": "DOUBLE PRECISION",
     "FLOAT": "REAL",
-    "DATE": "TIMESTAMP",
+    "DATE": "DATE",
     "DATETIME": "TIMESTAMP",
     "CHAR": "CHAR",
     "VARCHAR": "VARCHAR",
@@ -28,7 +28,17 @@
     "POLYGON": "POLYGON",
     "YEAR": "VARCHAR",
     "MONTH": "VARCHAR",
-    "DAY": "VARCHAR"
+    "DAY": "VARCHAR",
+    "ENUM": "VARCHAR(255)",
+    "SET": "TEXT",
+    "JSON": "JSON",
+    "BIT": "BIT",
+    "BOOL": "BOOLEAN",
+    "BOOLEAN": "BOOLEAN",
+    "TINYBLOB": "BYTEA",
+    "BINARY": "BYTEA",
+    "VARBINARY": "BYTEA",
+    "TINYINT(1)": "BOOLEAN"
   }
   ,
   "pg2mysql": {
@@ -147,11 +157,11 @@
     "TXID_SNAPSHOT": "CLOB"
   },
   "dm2pg": {
-    "INT": "NUMERIC(38)",
-    "INTEGER": "NUMERIC(38)",
-    "TINYINT": "NUMERIC(38)",
-    "SMALLINT": "NUMERIC(38)",
-    "BIGINT": "NUMERIC(38)",
+    "INT": "INTEGER",
+    "INTEGER": "INTEGER",
+    "TINYINT": "SMALLINT",
+    "SMALLINT": "SMALLINT",
+    "BIGINT": "BIGINT",
     "DECIMAL": "DECIMAL",
     "NUMERIC": "NUMERIC",
     "DEC": "NUMERIC",

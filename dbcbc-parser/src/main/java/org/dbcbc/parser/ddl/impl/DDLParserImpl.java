@@ -3,6 +3,7 @@
  */
 package org.dbcbc.parser.ddl.impl;
 
+import com.alibaba.fastjson2.JSON;
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.alter.Alter;
@@ -31,6 +32,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -61,12 +64,24 @@ public class DDLParserImpl implements DDLParser {
 
     @Override
     public DDLConfig parse(ConnectorInstance connectorInstance, ConnectorService connectorService, TableGroup tableGroup, String sql) throws JSQLParserException {
+        return parse(connectorInstance, connectorService, tableGroup, sql, null);
+    }
+
+    @Override
+    public DDLConfig parse(ConnectorInstance connectorInstance, ConnectorService connectorService, TableGroup tableGroup, String sql, String sourceConnectorType) throws JSQLParserException {
         DDLConfig ddlConfig = new DDLConfig();
         logger.info("ddl:{}", sql);
         Statement statement = SqlParserUtil.parse(sql);
         if (statement instanceof Alter && connectorService instanceof Database) {
             Alter alter = (Alter) statement;
             Database database = (Database) connectorService;
+            // 跨库DDL：转换列类型
+            if (sourceConnectorType != null) {
+                String targetConnectorType = connectorService.getConnectorType();
+                if (!StringUtil.equals(sourceConnectorType, targetConnectorType)) {
+                    convertColumnTypes(alter, sourceConnectorType, targetConnectorType);
+                }
+            }
             // 替换成目标表名
             String newTableName = database.buildWithQuotation(tableGroup.getTargetTable().getName());
             alter.getTable().setName(newTableName);
@@ -190,6 +205,79 @@ public class DDLParserImpl implements DDLParser {
                 fieldMappings.add(new FieldMapping(sourceFiledMap.get(newFieldName), targetFiledMap.get(newFieldName)));
             }
         });
+    }
+
+    // ==================== 跨库DDL类型转换 ====================
+
+    private static volatile Map<String, Map<String, String>> typeMappingCache;
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Map<String, String>> loadTypeMapping() {
+        if (typeMappingCache == null) {
+            synchronized (DDLParserImpl.class) {
+                if (typeMappingCache == null) {
+                    try {
+                        ClassLoader cl = Thread.currentThread().getContextClassLoader();
+                        if (cl == null) cl = DDLParserImpl.class.getClassLoader();
+                        try (InputStream in = cl.getResourceAsStream("TypeMapping.json")) {
+                            if (in != null) {
+                                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                                byte[] buf = new byte[4096];
+                                int len;
+                                while ((len = in.read(buf)) != -1) {
+                                    bos.write(buf, 0, len);
+                                }
+                                String json = bos.toString("UTF-8");
+                                typeMappingCache = JSON.parseObject(json, Map.class);
+                            }
+                        }
+                    } catch (Exception e) {
+                        LoggerFactory.getLogger(DDLParserImpl.class).warn("加载TypeMapping.json失败:{}", e.getMessage());
+                    }
+                    if (typeMappingCache == null) {
+                        typeMappingCache = new ConcurrentHashMap<>();
+                    }
+                }
+            }
+        }
+        return typeMappingCache;
+    }
+
+    private static String normalizeConnectorType(String connectorType) {
+        if (connectorType == null) return "";
+        switch (connectorType) {
+            case "DM": return "dm";
+            case "PostgreSQL": return "pg";
+            case "MySQL": return "mysql";
+            case "Oracle": return "oracle";
+            case "SqlServer": return "sqlserver";
+            default: return connectorType.toLowerCase();
+        }
+    }
+
+    private void convertColumnTypes(Alter alter, String sourceConnectorType, String targetConnectorType) {
+        String srcKey = normalizeConnectorType(sourceConnectorType);
+        String tgtKey = normalizeConnectorType(targetConnectorType);
+        String routeKey = srcKey + "2" + tgtKey;
+
+        Map<String, Map<String, String>> allMappings = loadTypeMapping();
+        Map<String, String> mapping = allMappings.get(routeKey);
+        if (mapping == null || mapping.isEmpty()) {
+            return;
+        }
+
+        for (AlterExpression expression : alter.getAlterExpressions()) {
+            if (expression.getColDataTypeList() == null) continue;
+            for (AlterExpression.ColumnDataType columnDataType : expression.getColDataTypeList()) {
+                if (columnDataType.getColDataType() == null) continue;
+                String srcType = columnDataType.getColDataType().getDataType();
+                if (srcType == null) continue;
+                String mappedType = mapping.get(srcType.toUpperCase());
+                if (mappedType != null) {
+                    columnDataType.getColDataType().setDataType(mappedType);
+                }
+            }
+        }
     }
 
 }

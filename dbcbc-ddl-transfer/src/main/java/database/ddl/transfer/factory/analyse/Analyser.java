@@ -14,7 +14,11 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 数据库分析接口
@@ -256,14 +260,14 @@ public abstract class Analyser {
 		if (preparedStatement != null) {
 			try {
 				preparedStatement.close();
-			} catch (Throwable e) {
+			} catch (Throwable ignored) {
 			}
 		}
 
 		if (resultSet != null) {
 			try {
 				resultSet.close();
-			} catch (Throwable e) {
+			} catch (Throwable ignored) {
 			}
 		}
 	}

@@ -5,6 +5,8 @@ package org.dbcbc.web.controller.system;
 
 import org.dbcbc.biz.SystemConfigService;
 import org.dbcbc.biz.vo.RestResult;
+import org.dbcbc.parser.LogService;
+import org.dbcbc.parser.LogType;
 import org.dbcbc.web.controller.BaseController;
 
 import org.slf4j.Logger;
@@ -30,6 +32,9 @@ public class SystemController extends BaseController {
     @Resource
     private SystemConfigService systemConfigService;
 
+    @Resource
+    private LogService logService;
+
     @RequestMapping("")
     public String index(ModelMap model) {
         model.put("config", systemConfigService.getSystemConfigVo());
@@ -41,6 +46,7 @@ public class SystemController extends BaseController {
     public RestResult edit(HttpServletRequest request) {
         try {
             Map<String, String> params = getParams(request);
+            logService.log(LogType.SystemLog.INFO, "修改系统配置");
             return RestResult.restSuccess(systemConfigService.edit(params));
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);
@@ -52,6 +58,7 @@ public class SystemController extends BaseController {
     @ResponseBody
     public RestResult generateRSA(HttpServletRequest request, @RequestParam(value = "keyLength") int keyLength) {
         try {
+            logService.log(LogType.SystemLog.INFO, "生成RSA密钥对, 长度:%s", keyLength);
             return RestResult.restSuccess(systemConfigService.createRSAConfig(keyLength));
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);
@@ -66,6 +73,7 @@ public class SystemController extends BaseController {
     @ResponseBody
     public RestResult generateApiSecret(HttpServletRequest request) {
         try {
+            logService.log(LogType.SystemLog.INFO, "生成API密钥");
             return RestResult.restSuccess(systemConfigService.generateApiSecret());
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);

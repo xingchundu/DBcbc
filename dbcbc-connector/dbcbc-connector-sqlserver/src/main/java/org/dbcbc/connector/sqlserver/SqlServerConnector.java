@@ -213,7 +213,7 @@ public final class SqlServerConnector extends AbstractDatabaseConnector {
 
     @Override
     public Object getPosition(DatabaseConnectorInstance connectorInstance) {
-        String sql = "SELECT * from cdc.lsn_time_mapping order by tran_begin_time desc";
+        String sql = "SELECT TOP 1 * from cdc.lsn_time_mapping order by tran_begin_time desc";
         List<Map<String, Object>> result = connectorInstance.execute(databaseTemplate->databaseTemplate.queryForList(sql));
         if (!CollectionUtils.isEmpty(result)) {
             List<Object> list = new ArrayList<>();

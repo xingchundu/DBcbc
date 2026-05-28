@@ -813,6 +813,33 @@ function renderSyncResult(mapping) {
     return content.join(' ');
 }
 
+// 同步延迟渲染
+function renderSyncDelay(mapping) {
+    const meta = mapping.meta;
+    if (!meta) return '';
+    if (meta.state === 0) {
+        return '<span class="text-muted">--</span>';
+    }
+    const updateTime = meta.updateTime;
+    if (!updateTime) {
+        return '<span class="text-muted">--</span>';
+    }
+    const now = new Date();
+    const target = new Date(updateTime);
+    const diffSeconds = Math.floor((now.getTime() - target.getTime()) / 1000);
+    let colorClass = 'text-success';
+    let title = '同步正常';
+    if (diffSeconds >= 300) {
+        colorClass = 'text-error';
+        title = '同步延迟较高';
+    } else if (diffSeconds >= 30) {
+        colorClass = 'text-warning';
+        title = '同步存在延迟';
+    }
+    const text = formatRelativeTime(updateTime);
+    return '<span class="' + colorClass + '" title="' + title + '">' + (text || '--') + '</span>';
+}
+
 // 根据任务类型生成内容
 function renderModelText(model) {
     const modelState = {

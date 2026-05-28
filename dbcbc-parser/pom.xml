@@ -24,6 +24,13 @@
             <version>${project.parent.version}</version>
         </dependency>
 
+        <!-- Spring Security (用于日志记录操作人) -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- antlr4-runtime -->
         <dependency>
             <groupId>org.antlr</groupId>

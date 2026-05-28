@@ -8,8 +8,13 @@ import database.ddl.transfer.bean.Table;
 import database.ddl.transfer.consts.DataBaseType;
 import database.ddl.transfer.factory.analyse.Analyser;
 
-import java.sql.*;
-import java.util.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * SQL Server 数据库结构分析器（用于表结构迁移的源/目标端）

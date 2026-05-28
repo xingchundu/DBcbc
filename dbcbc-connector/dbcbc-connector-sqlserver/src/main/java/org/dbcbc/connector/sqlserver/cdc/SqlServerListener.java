@@ -352,7 +352,7 @@ public class SqlServerListener extends AbstractDatabaseListener {
                 rs = ps.executeQuery();
                 apply = mapper.apply(rs);
             } catch (SQLServerException e) {
-                // 为过程或函数 cdc.fn_cdc_get_all_changes_ ... 提供的参数数目不足。
+                logger.warn("CDC查询参数不足: {}", e.getMessage());
             } catch (Exception e) {
                 logger.error(e.getMessage());
             } finally {

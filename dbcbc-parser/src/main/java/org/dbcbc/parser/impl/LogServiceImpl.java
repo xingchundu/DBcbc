@@ -12,6 +12,8 @@ import org.dbcbc.sdk.enums.StorageEnum;
 import org.dbcbc.sdk.storage.StorageService;
 import org.dbcbc.storage.impl.SnowflakeIdWorker;
 
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
@@ -57,12 +59,23 @@ public class LogServiceImpl implements LogService {
     }
 
     private void asyncWrite(String type, String error) {
+        // 在调用线程获取操作人（SecurityContextHolder 是线程本地变量，不能在异步线程中读取）
+        String username = "system";
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (authentication != null && authentication.isAuthenticated()) {
+                username = authentication.getName();
+            }
+        } catch (Exception ignored) {}
+
+        final String user = username;
         storageExecutor.execute(()-> {
-            Map<String, Object> params = new HashMap();
+            Map<String, Object> params = new HashMap<>(6);
             params.put(ConfigConstant.CONFIG_MODEL_ID, String.valueOf(snowflakeIdWorker.nextId()));
             params.put(ConfigConstant.CONFIG_MODEL_TYPE, type);
             params.put(ConfigConstant.CONFIG_MODEL_JSON, StringUtil.substring(error, 0, profileComponent.getSystemConfig().getMaxStorageErrorLength()));
             params.put(ConfigConstant.CONFIG_MODEL_CREATE_TIME, Instant.now().toEpochMilli());
+            params.put("user", user);
             storageService.add(StorageEnum.LOG, params);
         });
     }

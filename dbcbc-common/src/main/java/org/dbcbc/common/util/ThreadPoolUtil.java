@@ -1,10 +1,14 @@
 package org.dbcbc.common.util;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.RejectedExecutionHandler;
 
 public abstract class ThreadPoolUtil {
+
+    private static final Logger logger = LoggerFactory.getLogger(ThreadPoolUtil.class);
 
     /**
      * 新建线程池
@@ -47,10 +51,8 @@ public abstract class ThreadPoolUtil {
 
     private static RejectedExecutionHandler rejectedExecutionHandler() {
         return (r, executor)-> {
-            try {
-                executor.getQueue().put(r);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+            if (!executor.isShutdown()) {
+                logger.warn("线程池队列已满，任务被丢弃，线程池: {}", executor);
             }
         };
     }

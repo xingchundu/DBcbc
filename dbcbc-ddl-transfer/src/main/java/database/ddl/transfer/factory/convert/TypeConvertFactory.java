@@ -7,6 +7,7 @@ import database.ddl.transfer.factory.convert.impl.SqlServer2PostgreSQLTypeConver
 import database.ddl.transfer.factory.convert.impl.MySQL2OracleTypeConverter;
 import database.ddl.transfer.factory.convert.impl.MySQL2PostgreSQLTypeConverter;
 import database.ddl.transfer.factory.convert.impl.PostgreSql2MySQLTypeConverter;
+import database.ddl.transfer.factory.convert.impl.PostgreSQL2OracleTypeConverter;
 import database.ddl.transfer.utils.JsonUtil;
 import database.ddl.transfer.utils.StringUtil;
 import org.slf4j.Logger;
@@ -64,7 +65,7 @@ public final class TypeConvertFactory {
 			} else if(ConvertType.POSTGRESQL2ORACLE.equals(convertType)) {
 				mapping = typeMapping.get("pg2oracle");
 				typeProperties = StringUtil.str2Map(DataBaseTypeProperties.ORACLE_TYPE_SCALA);
-				typeConverter = new Oracle2PostgreSQLTypeConverter(mapping, typeProperties);
+				typeConverter = new PostgreSQL2OracleTypeConverter(mapping, typeProperties);
 			}else if(ConvertType.DM2POSTGRESQL.equals(convertType)) {
 				mapping = typeMapping.get("dm2pg");
 				typeProperties = StringUtil.str2Map(DataBaseTypeProperties.POSTGRE_TYPE_SCALA);

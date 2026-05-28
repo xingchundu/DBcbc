@@ -76,7 +76,11 @@ public class ConfigController {
                     String filename = file.getOriginalFilename();
                     systemConfigService.checkFileSuffix(filename);
                     String tmpdir = System.getProperty("java.io.tmpdir");
-                    File dest = new File(tmpdir + filename);
+                    java.nio.file.Path destPath = java.nio.file.Paths.get(tmpdir).resolve(filename).normalize();
+                    if (!destPath.startsWith(tmpdir)) {
+                        throw new IllegalArgumentException("非法文件名: " + filename);
+                    }
+                    File dest = destPath.toFile();
                     FileUtils.deleteQuietly(dest);
                     FileUtils.copyInputStreamToFile(file.getInputStream(), dest);
                     systemConfigService.refreshConfig(dest);

@@ -209,6 +209,7 @@ public abstract class Generator {
 							}
 							this.executeAddPrimaryKeyIfMissing(statement, sourceTable, targetTable, tableName);
 							this.executeSecondaryIndexStatementsForMissing(statement, sourceTable, targetTable, tableName);
+							this.executeDropRedundantIndexes(statement, sourceTable, targetTable, tableName);
 						}
 					} catch (Throwable e) {
 						String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
@@ -226,13 +227,14 @@ public abstract class Generator {
 	}
 
 	/**
-	 * Oracle / 达梦 的建表 DDL 常含 COMMENT 等多条语句，需按分号拆分逐条执行
+	 * Oracle / 达梦 的建表 DDL 常含 COMMENT 等多条语句，需按分号拆分逐条执行。
+	 * 需要识别 PL/SQL 块（BEGIN...END），块内的分号不作为语句分隔符。
 	 */
 	private void executeDdlStatements(Statement statement, String ddl) throws SQLException {
 		if (targetDBSettings.getDataBaseType().equals(DataBaseType.ORACLE)
 				|| targetDBSettings.getDataBaseType().equals(DataBaseType.DM)
 				|| targetDBSettings.getDataBaseType().equals(DataBaseType.POSTGRESQL)) {
-			for (String singleSql : ddl.split(";")) {
+			for (String singleSql : splitDdl(ddl)) {
 				if (StringUtil.isBlank(singleSql)) {
 					continue;
 				}
@@ -241,6 +243,60 @@ public abstract class Generator {
 		} else {
 			statement.execute(ddl);
 		}
+	}
+
+	/**
+	 * 按分号拆分 DDL，但保留 PL/SQL 块（BEGIN...END;/）内的分号
+	 */
+	private List<String> splitDdl(String ddl) {
+		List<String> result = new ArrayList<>();
+		StringBuilder current = new StringBuilder();
+		String upper = ddl.toUpperCase();
+		int depth = 0;
+		int i = 0;
+		while (i < ddl.length()) {
+			char c = ddl.charAt(i);
+			// 检测 BEGIN 或 DECLARE 开始 PL/SQL 块
+			if (depth == 0) {
+				if (upper.startsWith("BEGIN", i) && (i == 0 || !Character.isLetterOrDigit(upper.charAt(i - 1)))) {
+					depth++;
+				} else if (upper.startsWith("DECLARE", i) && (i == 0 || !Character.isLetterOrDigit(upper.charAt(i - 1)))) {
+					depth++;
+				}
+			}
+			if (depth > 0) {
+				// PL/SQL 块内：遇到 END; 且后面紧跟 / 时结束块
+				if (upper.startsWith("END", i) && (i + 3 >= upper.length() || !Character.isLetterOrDigit(upper.charAt(i + 3)))) {
+					// 向前看是否有分号和斜杠
+					int j = i + 3;
+					while (j < ddl.length() && ddl.charAt(j) == ' ') j++;
+					if (j < ddl.length() && ddl.charAt(j) == ';') {
+						depth--;
+						current.append(ddl, i, j + 1);
+						i = j + 1;
+						// 跳过空白和 /
+						while (i < ddl.length() && (ddl.charAt(i) == ' ' || ddl.charAt(i) == '\n' || ddl.charAt(i) == '\r')) i++;
+						if (i < ddl.length() && ddl.charAt(i) == '/') i++;
+						if (depth == 0) {
+							result.add(current.toString());
+							current.setLength(0);
+						}
+						continue;
+					}
+				}
+			}
+			if (c == ';' && depth == 0) {
+				result.add(current.toString());
+				current.setLength(0);
+			} else {
+				current.append(c);
+			}
+			i++;
+		}
+		if (current.length() > 0) {
+			result.add(current.toString());
+		}
+		return result;
 	}
 
 	/**
@@ -308,17 +364,54 @@ public abstract class Generator {
 	}
 
 	/**
-	 * 与 createTable 中“新建表”分支配合:逐条执行 CREATE INDEX 类语句(Oracle 按分号拆分以兼容多语句脚本风格)
+	 * 与 createTable 中"新建表"分支配合:逐条执行 CREATE INDEX 类语句(Oracle 按分号拆分以兼容多语句脚本风格)
 	 */
 	private void executeSecondaryIndexStatements(Statement statement, Table sourceTable, String tableName) {
 		this.executeSecondaryIndexDdlList(statement, this.getIndexCreationDdls(sourceTable), tableName);
 	}
 
 	/**
-	 * 与 createTable 中“表已存在”分支配合:只执行 {@link #getIndexCreationDdlsMissingOnTarget} 的 DDL
+	 * 与 createTable 中"表已存在"分支配合:只执行 {@link #getIndexCreationDdlsMissingOnTarget} 的 DDL
 	 */
 	private void executeSecondaryIndexStatementsForMissing(Statement statement, Table sourceTable, Table targetTable, String tableName) {
 		this.executeSecondaryIndexDdlList(statement, this.getIndexCreationDdlsMissingOnTarget(sourceTable, targetTable), tableName);
+	}
+
+	/**
+	 * 表已存在时，删除目标端有但源端无的冗余索引
+	 */
+	private void executeDropRedundantIndexes(Statement statement, Table sourceTable, Table targetTable, String tableName) {
+		if (targetTable == null || targetTable.getSecondaryIndexes() == null || targetTable.getSecondaryIndexes().isEmpty()) {
+			return;
+		}
+		Set<String> sourceIdxLower = new HashSet<>();
+		if (sourceTable.getSecondaryIndexes() != null) {
+			for (IndexDefinition idx : sourceTable.getSecondaryIndexes()) {
+				if (idx.getIndexName() != null) {
+					sourceIdxLower.add(idx.getIndexName().toLowerCase());
+				}
+			}
+		}
+		DataBaseType targetType = targetDBSettings.getDataBaseType();
+		for (IndexDefinition targetIdx : targetTable.getSecondaryIndexes()) {
+			if (targetIdx.getIndexName() == null) {
+				continue;
+			}
+			if (sourceIdxLower.contains(targetIdx.getIndexName().toLowerCase())) {
+				continue;
+			}
+			String dropSql = IndexDdlFactory.buildDropIndex(targetType, targetTable, targetIdx);
+			if (StringUtil.isBlank(dropSql)) {
+				continue;
+			}
+			try {
+				statement.execute(dropSql);
+				logger.info("表{} redundant index dropped: {}", tableName, dropSql);
+			} catch (Throwable e) {
+				String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+				logger.warn("表{} drop redundant index failed: {} -- {}", tableName, dropSql, reason);
+			}
+		}
 	}
 
 	/**
@@ -406,14 +499,14 @@ public abstract class Generator {
 		if (preparedStatement != null) {
 			try {
 				preparedStatement.close();
-			} catch (Throwable e) {
+			} catch (Throwable ignored) {
 			}
 		}
 
 		if (resultSet != null) {
 			try {
 				resultSet.close();
-			} catch (Throwable e) {
+			} catch (Throwable ignored) {
 			}
 		}
 	}

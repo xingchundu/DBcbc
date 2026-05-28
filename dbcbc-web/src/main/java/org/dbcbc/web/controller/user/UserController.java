@@ -66,7 +66,7 @@ public class UserController extends BaseController {
         return RestResult.restSuccess(getUserInfoVo());
     }
 
-    @RequestMapping(value = "/add")
+    @PostMapping(value = "/add")
     @ResponseBody
     public RestResult add(HttpServletRequest request) {
         try {
@@ -78,7 +78,7 @@ public class UserController extends BaseController {
         }
     }
 
-    @RequestMapping(value = "/edit")
+    @PostMapping(value = "/edit")
     @ResponseBody
     public RestResult edit(HttpServletRequest request) {
         try {

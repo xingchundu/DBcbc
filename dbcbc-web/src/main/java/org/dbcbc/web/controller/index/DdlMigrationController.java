@@ -13,6 +13,8 @@ import database.ddl.transfer.object.ObjectMigrateResult;
 import org.dbcbc.biz.ConnectorService;
 import org.dbcbc.biz.vo.ConnectorVO;
 import org.dbcbc.biz.vo.RestResult;
+import org.dbcbc.parser.LogService;
+import org.dbcbc.parser.LogType;
 import org.dbcbc.sdk.config.DatabaseConfig;
 import org.dbcbc.sdk.model.ConnectorConfig;
 import org.dbcbc.web.controller.BaseController;
@@ -63,6 +65,9 @@ public class DdlMigrationController extends BaseController {
     @Resource
     private DdlMigrationService ddlMigrationService;
 
+    @Resource
+    private LogService logService;
+
     // ─────────────────────────────────────────────────────────────
     // GET /ddl/migration — 页面入口
     // ─────────────────────────────────────────────────────────────
@@ -98,6 +103,7 @@ public class DdlMigrationController extends BaseController {
                 DdlMigrationLogCapture.runCapturing(() -> holder[0] = ddlMigrationService.transfer(src, tgt));
         RestResult result = buildTableResult(cap, holder[0]);
         if (cap.getError() == null) {
+            logService.log(LogType.SystemLog.INFO, "执行DDL表结构迁移");
             try {
                 String refreshMsg = connectorService.refreshConnectorDatabases(tgt);
                 appendRefreshNotice(result, refreshMsg);
@@ -138,6 +144,9 @@ public class DdlMigrationController extends BaseController {
         DdlMigrationLogCapture.CaptureResult cap =
                 DdlMigrationLogCapture.runCapturing(
                         () -> holder[0] = ddlMigrationService.transferObjects(src, tgt, objTypes));
+        if (cap.getError() == null) {
+            logService.log(LogType.SystemLog.INFO, "执行DDL对象迁移");
+        }
         return buildObjectResult(cap, holder[0]);
     }
 

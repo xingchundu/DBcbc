@@ -145,7 +145,9 @@ public class SimpleDataSource implements DataSource, AutoCloseable {
             }
 
             // 回收连接
-            pool.offer(simpleConnection);
+            if (!pool.offer(simpleConnection)) {
+                closeQuietly(simpleConnection);
+            }
         }
     }
 

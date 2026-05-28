@@ -254,7 +254,7 @@ function bindTaskEvents() {
                 size: 'medium',
                 confirmType: 'danger',
                 onConfirm: function() {
-                    doGetter('/task/delete', {taskId: taskId}, function(response) {
+                    doPoster('/task/delete', {taskId: taskId}, function(response) {
                         if (response.success) {
                             bootGrowl('任务删除成功！', 'success');
                             if (taskPagination) {

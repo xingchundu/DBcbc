@@ -5,6 +5,7 @@ public class LogVO {
     private String id;
     private String type;
     private String json;
+    private String user;
     private long createTime;
 
     public String getId() {
@@ -37,5 +38,13 @@ public class LogVO {
 
     public void setCreateTime(long createTime) {
         this.createTime = createTime;
+    }
+
+    public String getUser() {
+        return user;
+    }
+
+    public void setUser(String user) {
+        this.user = user;
     }
 }
