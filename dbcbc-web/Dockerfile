@@ -35,7 +35,7 @@ RUN unzip dbcbc-$DBSYNCER_VERSION-bin.zip && \
     mkdir -p logs conf data plugins
 
 # 暴露端口
-EXPOSE 18686
+EXPOSE 20268
 
 # 挂载卷 (注意：如果宿主机挂载了这些目录，容器内的原有文件会被隐藏)
 VOLUME [ "/app/dbcbc/conf", "/app/dbcbc/data", "/app/dbcbc/logs", "/app/dbcbc/plugins" ]

@@ -165,7 +165,7 @@ CREATE TABLE `dbcbc_task_data_verification_detail` (
 | **接口覆盖** | 自动扫描所有 Controller 端点：连接管理、驱动管理、表组管理、DDL 迁移、数据验证、监控等 |
 | **无侵入** | 基于现有 `@RequestMapping`/`@PostMapping`/`@GetMapping` 注解自动生成，无需修改已有代码 |
 
-**访问方式**：启动服务后，浏览器打开 `http://127.0.0.1:18686/swagger-ui.html`
+**访问方式**：启动服务后，浏览器打开 `http://127.0.0.1:20268/swagger-ui.html`
 
 ### 同步延迟监控
 
@@ -310,7 +310,7 @@ CREATE TABLE `dbcbc_task_data_verification_detail` (
 
 按需修改 **`conf/application.properties`**，常见项：
 
-- **`server.port`**：Web 管理服务端口（默认 **`18686`**）
+- **`server.port`**：Web 管理服务端口（默认 **`20268`**）
 - **`server.ip`**（若配置）：监听地址
 
 修改前建议备份配置文件。Linux / macOS 若未全局配置 JDK，可在 **`bin/startup.sh`** 中取消注释并设置：
@@ -333,7 +333,7 @@ chmod +x startup.sh stop.sh    # 若无可执行权限时执行一次
 
 **Windows：** 进入 **`安装根目录\bin`**，执行 `startup.bat` 或 `startup.cmd`（若存在）。
 
-**访问 Web：** http://127.0.0.1:18686（若改了端口则用新端口）。默认账号 **admin** / **admin**，首次登录后建议修改密码。
+**访问 Web：** http://127.0.0.1:20268（若改了端口则用新端口）。默认账号 **admin** / **admin**，首次登录后建议修改密码。
 
 #### 停止服务
 
@@ -357,7 +357,7 @@ Windows 请使用包内停止脚本或按运维规范结束主类 **`org.dbcbc.w
 
 #### 端口与防火墙
 
-默认 Web 端口 **`18686`**。远程访问时请在防火墙或云安全组中 **放行对应 TCP 端口**。
+默认 Web 端口 **`20268`**。远程访问时请在防火墙或云安全组中 **放行对应 TCP 端口**。
 
 #### 安装常见问题
 
@@ -383,7 +383,7 @@ docker pull scxhtb-registry.cn-hangzhou.cr.aliyuncs.com/xhtb/dbcbc-enterprise:2.
 docker run -d \
   --name=dbcbc \
   --restart=unless-stopped \
-  -p 18686:18686 \
+  -p 20268:20268 \
   -e TZ="Asia/Shanghai" \
   -m 5g \
   --memory-swap=5g \

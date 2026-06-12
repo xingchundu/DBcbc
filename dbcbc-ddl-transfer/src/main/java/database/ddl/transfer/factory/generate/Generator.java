@@ -246,15 +246,31 @@ public abstract class Generator {
 	}
 
 	/**
-	 * 按分号拆分 DDL，但保留 PL/SQL 块（BEGIN...END;/）内的分号
+	 * 按分号拆分 DDL，但保留 PL/SQL 块（BEGIN...END;/）内的分号，以及单引号字符串字面量内的分号
+	 * （如 PostgreSQL COMMENT ON COLUMN ... IS '注释中含;号'）
 	 */
 	private List<String> splitDdl(String ddl) {
 		List<String> result = new ArrayList<>();
 		StringBuilder current = new StringBuilder();
 		String upper = ddl.toUpperCase();
 		int depth = 0;
+		boolean inString = false;
 		int i = 0;
 		while (i < ddl.length()) {
+			if (inString) {
+				char c = ddl.charAt(i);
+				current.append(c);
+				if (c == '\'') {
+					if (i + 1 < ddl.length() && ddl.charAt(i + 1) == '\'') {
+						current.append(ddl.charAt(++i));
+					} else {
+						inString = false;
+					}
+				}
+				i++;
+				continue;
+			}
+
 			char c = ddl.charAt(i);
 			// 检测 BEGIN 或 DECLARE 开始 PL/SQL 块
 			if (depth == 0) {
@@ -267,16 +283,20 @@ public abstract class Generator {
 			if (depth > 0) {
 				// PL/SQL 块内：遇到 END; 且后面紧跟 / 时结束块
 				if (upper.startsWith("END", i) && (i + 3 >= upper.length() || !Character.isLetterOrDigit(upper.charAt(i + 3)))) {
-					// 向前看是否有分号和斜杠
 					int j = i + 3;
-					while (j < ddl.length() && ddl.charAt(j) == ' ') j++;
+					while (j < ddl.length() && ddl.charAt(j) == ' ') {
+						j++;
+					}
 					if (j < ddl.length() && ddl.charAt(j) == ';') {
 						depth--;
 						current.append(ddl, i, j + 1);
 						i = j + 1;
-						// 跳过空白和 /
-						while (i < ddl.length() && (ddl.charAt(i) == ' ' || ddl.charAt(i) == '\n' || ddl.charAt(i) == '\r')) i++;
-						if (i < ddl.length() && ddl.charAt(i) == '/') i++;
+						while (i < ddl.length() && (ddl.charAt(i) == ' ' || ddl.charAt(i) == '\n' || ddl.charAt(i) == '\r')) {
+							i++;
+						}
+						if (i < ddl.length() && ddl.charAt(i) == '/') {
+							i++;
+						}
 						if (depth == 0) {
 							result.add(current.toString());
 							current.setLength(0);
@@ -284,6 +304,19 @@ public abstract class Generator {
 						continue;
 					}
 				}
+			}
+			if (c == 'E' && i + 1 < ddl.length() && ddl.charAt(i + 1) == '\'') {
+				inString = true;
+				current.append(c);
+				current.append(ddl.charAt(++i));
+				i++;
+				continue;
+			}
+			if (c == '\'') {
+				inString = true;
+				current.append(c);
+				i++;
+				continue;
 			}
 			if (c == ';' && depth == 0) {
 				result.add(current.toString());

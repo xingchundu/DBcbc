@@ -36,7 +36,7 @@ public class HttpRedirectConfig implements WebServerFactoryCustomizer<TomcatServ
 
     private final Logger logger = LoggerFactory.getLogger(getClass());
 
-    @Value("${server.port:18686}")
+    @Value("${server.port:20268}")
     private int httpsPort;
 
     @Value("${server.http.port:8080}")

@@ -6,6 +6,7 @@ import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 
 import database.ddl.transfer.bean.Column;
 import database.ddl.transfer.bean.DBSettings;
@@ -204,21 +205,10 @@ public class PostgreSqlGenerator extends Generator {
 			} else {
 				if (sourceColumn.equals(targetColumn)) {
 					continue;
-				} else {
-					// 由于不同数据库类型转换后与实际查询的类型存在不一致，导致不应该修改类型的字段也会再次执行类型修改操作，表数据量大时影响性能，暂关闭类型修改功能
-//					if(!sourceColumn.getDataType().equals(targetColumn.getDataType()) && !primaryKeys.contains(targetColumn.getColumnName())) {
-//						stringBuilder.append("ALTER TABLE \"").append(sourceDataBaseDefine.getCatalog()).append("\".\"public\".\"").append(sourceTableDefine.getTableName()).append("\" ALTER COLUMN ").append(columnName).append(" type ").append(sourceColumn.getFinalConvertDataType())
-//						.append(";");
-//					}
-//
-//					if (!StringUtil.isBlank(sourceColumn.getColumnComment()) && !sourceColumn.getColumnComment().equals(targetColumn.getColumnComment())) {
-//						stringBuilder.append("COMMENT ON COLUMN \"").append(sourceDataBaseDefine.getCatalog()).append("\".\"public\".\"").append(sourceTableDefine.getTableName()).append("\" IS '").append(sourceColumn.getColumnComment()).append("';");
-//					}
-//					
-//					if(!sourceColumn.isNullAble() == targetColumn.isNullAble() && !targetColumn.isNullAble()) {
-//						// 删除非空校验
-//						stringBuilder.append("ALTER TABLE \"").append(sourceDataBaseDefine.getCatalog()).append("\".\"public\".\"").append(sourceTableDefine.getTableName()).append("\" ALTER COLUMN ").append(columnName).append(" drop not null;");
-//					}
+				} else if (needsExpandVarcharToText(sourceColumn, targetColumn)
+						&& !primaryKeys.contains(columnName)) {
+					stringBuilder.append("ALTER TABLE \"").append(sourceTableDefine.getTableName())
+							.append("\" ALTER COLUMN \"").append(columnName).append("\" TYPE TEXT;");
 				}
 			}
 			if(!StringUtil.isBlank(stringBuilder.toString())) {
@@ -226,5 +216,21 @@ public class PostgreSqlGenerator extends Generator {
 			}
 		}
 		return resultList;
+	}
+
+	/**
+	 * 源列已映射为 TEXT，但目标库仍为 varchar 等定长字符类型时需扩容
+	 */
+	private boolean needsExpandVarcharToText(Column sourceColumn, Column targetColumn) {
+		String sourceType = sourceColumn.getFinalConvertDataType();
+		if (sourceType == null || !"TEXT".equalsIgnoreCase(sourceType.trim())) {
+			return false;
+		}
+		String targetType = targetColumn.getDataType();
+		if (StringUtil.isBlank(targetType)) {
+			return false;
+		}
+		String lower = targetType.toLowerCase(Locale.ROOT);
+		return lower.contains("varchar") || lower.contains("character varying");
 	}
 }
