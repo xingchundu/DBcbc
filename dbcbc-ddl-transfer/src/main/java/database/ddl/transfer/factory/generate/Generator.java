@@ -83,7 +83,25 @@ public abstract class Generator {
 			String url = DBUrlUtil.generateDataBaseUrl(targetDBSettings);
 			connection = DriverManager.getConnection(url, targetDBSettings.getUserName(), targetDBSettings.getUserPassword());
 		}
+		ensurePostgreSqlSession();
 		this.createTable(sourceDataBaseDefine.getTablesMap().values());
+	}
+
+	/**
+	 * PostgreSQL：MySQL 库名常被误当作 schema；统一在 public 下建表，并确保同名 schema 存在以免 DEFAULT 等引用报错。
+	 */
+	private void ensurePostgreSqlSession() throws SQLException {
+		if (!DataBaseType.POSTGRESQL.equals(targetDBSettings.getDataBaseType())) {
+			return;
+		}
+		try (Statement stmt = connection.createStatement()) {
+			stmt.execute("SET search_path TO public");
+			String catalog = sourceDataBaseDefine.getCatalog();
+			if (!StringUtil.isBlank(catalog)) {
+				stmt.execute("CREATE SCHEMA IF NOT EXISTS \"" + catalog.replace("\"", "\"\"") + "\"");
+			}
+			logger.info("PostgreSQL 会话 search_path=public，schema [{}] 已就绪", catalog);
+		}
 	}
 
 	public List<MigrationIssue> getMigrationIssues() {

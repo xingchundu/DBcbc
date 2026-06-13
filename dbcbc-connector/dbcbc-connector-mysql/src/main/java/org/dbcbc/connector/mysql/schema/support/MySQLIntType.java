@@ -21,7 +21,8 @@ public final class MySQLIntType extends IntType {
 
     private enum TypeEnum {
 
-        SMALLINT_UNSIGNED("SMALLINT UNSIGNED"), MEDIUMINT("MEDIUMINT"), MEDIUMINT_UNSIGNED("MEDIUMINT UNSIGNED"), INT("INT"), INTEGER("INTEGER"), YEAR("YEAR");
+        SMALLINT_UNSIGNED("SMALLINT UNSIGNED"), MEDIUMINT("MEDIUMINT"), MEDIUMINT_UNSIGNED("MEDIUMINT UNSIGNED"), INT("INT"), INTEGER("INTEGER"),
+        YEAR("YEAR"), MONTH("MONTH"), DAY("DAY");
 
         private final String value;
 
@@ -45,7 +46,24 @@ public final class MySQLIntType extends IntType {
             Date d = (Date) val;
             Calendar calendar = Calendar.getInstance();
             calendar.setTime(d);
+            String typeName = field.getTypeName();
+            if (typeName != null && "MONTH".equalsIgnoreCase(typeName)) {
+                return calendar.get(Calendar.MONTH) + 1;
+            }
+            if (typeName != null && "DAY".equalsIgnoreCase(typeName)) {
+                return calendar.get(Calendar.DAY_OF_MONTH);
+            }
             return calendar.get(Calendar.YEAR);
+        }
+        if (val instanceof Number) {
+            return ((Number) val).intValue();
+        }
+        if (val instanceof String) {
+            String s = ((String) val).trim();
+            if (s.isEmpty()) {
+                return null;
+            }
+            return Integer.parseInt(s);
         }
         return throwUnsupportedException(val, field);
     }

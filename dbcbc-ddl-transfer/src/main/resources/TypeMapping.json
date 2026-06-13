@@ -18,6 +18,7 @@
     "CHAR": "CHAR",
     "VARCHAR": "VARCHAR",
     "TEXT": "TEXT",
+    "TINYTEXT": "TEXT",
     "LONGTEXT": "TEXT",
     "MEDIUMTEXT": "TEXT",
     "BLOB": "BYTEA",

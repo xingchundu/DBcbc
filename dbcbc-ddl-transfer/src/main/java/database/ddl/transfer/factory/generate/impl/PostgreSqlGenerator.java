@@ -23,14 +23,24 @@ import database.ddl.transfer.utils.StringUtil;
  */
 public class PostgreSqlGenerator extends Generator {
 
+	private static final String PG_SCHEMA = "public";
+
 	public PostgreSqlGenerator(Connection connection, DataBaseDefine dataBaseDefine, DBSettings targetDBSettings) {
 		super(connection, dataBaseDefine, targetDBSettings);
+	}
+
+	private String pgTable(String tableName) {
+		return PG_SCHEMA + ".\"" + tableName + "\"";
+	}
+
+	private String pgColumnRef(String tableName, String columnName) {
+		return pgTable(tableName) + ".\"" + columnName + "\"";
 	}
 
 	@Override
 	protected String getTableDDL(Table tableDefine) {
 		StringBuilder stringBuilder = new StringBuilder("create table ");
-		stringBuilder.append("\"").append(tableDefine.getTableName()).append("\"").append("(");
+		stringBuilder.append(pgTable(tableDefine.getTableName())).append("(");
 
 		List<Column> columnList = tableDefine.getColumns();
 		for (Column column : columnList) {
@@ -92,11 +102,22 @@ public class PostgreSqlGenerator extends Generator {
 		boolean isAutoIncrement = column.getExtra() != null && column.getExtra().toLowerCase().contains("auto_increment");
 		if (isAutoIncrement) {
 			stringBuilder.append(" GENERATED ALWAYS AS IDENTITY");
-		} else if (column.hasDefault()) {
+		} else if (column.hasDefault() && isPostgreSqlCompatibleDefault(column)) {
 			stringBuilder.append(" default ").append(column.getDefaultDefine());
 		}
 
 		return stringBuilder.toString();
+	}
+
+	/**
+	 * 跳过 MySQL 特有、无法直接在 PostgreSQL DEFAULT 中使用的表达式（如反引号限定名 qgfkss.xxx）
+	 */
+	private boolean isPostgreSqlCompatibleDefault(Column column) {
+		String def = column.getDefaultDefine();
+		if (StringUtil.isBlank(def)) {
+			return false;
+		}
+		return def.indexOf('`') < 0;
 	}
 
 	private String getCommentDefineDDL(Table tableDefine) {
@@ -105,13 +126,14 @@ public class PostgreSqlGenerator extends Generator {
 		for (Column column : columns) {
 			if (!StringUtil.isBlank(column.getColumnComment())) {
 				String escapedComment = column.getColumnComment().replace("'", "''");
-				stringBuilder.append("COMMENT ON COLUMN \"").append(tableDefine.getTableName()).append("\".\"").append(column.getColumnName()).append("\" IS '").append(escapedComment)
+				stringBuilder.append("COMMENT ON COLUMN ").append(pgColumnRef(tableDefine.getTableName(), column.getColumnName()))
+						.append(" IS '").append(escapedComment)
 						.append("';");
 			}
 		}
 		if (!StringUtil.isBlank(tableDefine.getTableComment())) {
 			String escapedComment = tableDefine.getTableComment().replace("'", "''");
-			stringBuilder.append("COMMENT ON TABLE \"").append(tableDefine.getTableName()).append("\" IS '").append(escapedComment).append("'");
+			stringBuilder.append("COMMENT ON TABLE ").append(pgTable(tableDefine.getTableName())).append(" IS '").append(escapedComment).append("'");
 		}
 		return stringBuilder.toString();
 	}
@@ -189,7 +211,8 @@ public class PostgreSqlGenerator extends Generator {
 			Column targetColumn = targetTableDefine.getColumnsMap().get(columnName);
 			if (targetColumn == null) {
 				// 字段不存在直接添加
-				stringBuilder.append("ALTER TABLE \"").append(sourceTableDefine.getTableName()).append("\" ADD COLUMN ").append(columnName).append(" ").append(sourceColumn.getFinalConvertDataType())
+				stringBuilder.append("ALTER TABLE ").append(pgTable(sourceTableDefine.getTableName())).append(" ADD COLUMN \"").append(columnName).append("\" ")
+						.append(sourceColumn.getFinalConvertDataType())
 						.append(" ");
 				if (!sourceColumn.isNullAble()) {
 					stringBuilder.append("NOT NULL");
@@ -200,15 +223,16 @@ public class PostgreSqlGenerator extends Generator {
 
 				if (!StringUtil.isBlank(sourceColumn.getColumnComment())) {
 					String escapedComment = sourceColumn.getColumnComment().replace("'", "''");
-					stringBuilder.append("COMMENT ON COLUMN \"").append(sourceTableDefine.getTableName()).append("\".\"").append(columnName).append("\" IS '").append(escapedComment).append("';");
+					stringBuilder.append("COMMENT ON COLUMN ").append(pgColumnRef(sourceTableDefine.getTableName(), columnName))
+							.append(" IS '").append(escapedComment).append("';");
 				}
 			} else {
 				if (sourceColumn.equals(targetColumn)) {
 					continue;
 				} else if (needsExpandVarcharToText(sourceColumn, targetColumn)
 						&& !primaryKeys.contains(columnName)) {
-					stringBuilder.append("ALTER TABLE \"").append(sourceTableDefine.getTableName())
-							.append("\" ALTER COLUMN \"").append(columnName).append("\" TYPE TEXT;");
+					stringBuilder.append("ALTER TABLE ").append(pgTable(sourceTableDefine.getTableName()))
+							.append(" ALTER COLUMN \"").append(columnName).append("\" TYPE TEXT;");
 				}
 			}
 			if(!StringUtil.isBlank(stringBuilder.toString())) {

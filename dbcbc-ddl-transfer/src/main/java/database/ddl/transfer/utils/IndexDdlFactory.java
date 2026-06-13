@@ -81,16 +81,23 @@ public final class IndexDdlFactory {
 		// 源 MySQL FULLTEXT,目标 PG: 单列表用 gin + to_tsvector(多列不自动生成)
 		if ("fulltext".equals(m) && sourceTypeOrMatch(sourceType, DataBaseType.MYSQL)) {
 			if (idx.getColumnNames().size() == 1) {
-				return String.format("create index %s on %s using gin (to_tsvector('simple', %s::text))", qpgIdent(in), qpgIdent(tb),
+				return String.format("create index %s on %s using gin (to_tsvector('simple', %s::text))", qpgIdent(in), qpgTable(tb),
 						qpgIdent(idx.getColumnNames().get(0)));
 			}
 			return null;
 		}
 		// 源/目标侧非 btree 的访问方法(如 PG 的 gin、MySQL 的 hash 等)
 		if (isPgNonBtreeMethod(m) && (sourceTypeOrMatch(sourceType, DataBaseType.POSTGRESQL) || "hash".equals(m))) {
-			return String.format("create %sindex %s on %s using %s (%s)", uq, qpgIdent(in), qpgIdent(tb), m, joinPgColumns(idx));
+			return String.format("create %sindex %s on %s using %s (%s)", uq, qpgIdent(in), qpgTable(tb), m, joinPgColumns(idx));
 		}
-		return String.format("create %sindex %s on %s (%s)", uq, qpgIdent(in), qpgIdent(tb), joinPgColumns(idx));
+		return String.format("create %sindex %s on %s (%s)", uq, qpgIdent(in), qpgTable(tb), joinPgColumns(idx));
+	}
+
+	private static String qpgTable(String tableName) {
+		if (tableName == null) {
+			return "public.\"\"";
+		}
+		return "public.\"" + tableName.replace("\"", "\"\"") + "\"";
 	}
 
 	private static boolean isPgNonBtreeMethod(String m) {

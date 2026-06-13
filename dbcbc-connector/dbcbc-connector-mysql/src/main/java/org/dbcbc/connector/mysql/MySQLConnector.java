@@ -19,6 +19,7 @@ import org.dbcbc.sdk.connector.ConnectorServiceContext;
 import org.dbcbc.sdk.connector.database.AbstractDatabaseConnector;
 import org.dbcbc.sdk.connector.database.Database;
 import org.dbcbc.sdk.connector.database.DatabaseConnectorInstance;
+import org.dbcbc.sdk.constant.ConnectorConstant;
 import org.dbcbc.sdk.constant.DatabaseConstant;
 import org.dbcbc.sdk.enums.ListenerTypeEnum;
 import org.dbcbc.sdk.listener.DatabaseQuartzListener;
@@ -31,11 +32,18 @@ import org.dbcbc.sdk.schema.SchemaResolver;
 import org.dbcbc.sdk.storage.StorageService;
 import org.dbcbc.sdk.util.PrimaryKeyUtil;
 
+import org.springframework.util.Assert;
+
 import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
@@ -59,6 +67,10 @@ public final class MySQLConnector extends AbstractDatabaseConnector {
      * 连接 extInfo 置为 true 时保留 Unicode 补充平面（emoji 等），不剥离；表列为 utf8mb4 时建议设 true。未置 true 时写入前会去掉 U+10000 以上码点，避免目标列为 MySQL 旧版 utf8(utf8mb3) 时 1366。
      */
     private static final String EXT_PRESERVE_4BYTE_CHARS = "preserve4byteChars";
+
+    private static final String ZERO_DATE_TIME_BEHAVIOR = "zeroDateTimeBehavior";
+
+    private static final String ZERO_DATE_TIME_CONVERT_TO_NULL = "convertToNull";
 
     @Override
     public String getConnectorType() {
@@ -124,9 +136,15 @@ public final class MySQLConnector extends AbstractDatabaseConnector {
         if (p2.getProperty("connectionCollation") == null) {
             p2.setProperty("connectionCollation", "utf8mb4_unicode_ci");
         }
+        if (p2.getProperty(ZERO_DATE_TIME_BEHAVIOR) == null) {
+            p2.setProperty(ZERO_DATE_TIME_BEHAVIOR, ZERO_DATE_TIME_CONVERT_TO_NULL);
+        }
         String u = url;
         if (StringUtil.isNotBlank(u) && !u.contains("connectionCollation=")) {
             u = u + (u.contains("?") ? "&" : "?") + "useUnicode=true&connectionCollation=utf8mb4_unicode_ci";
+        }
+        if (StringUtil.isNotBlank(u) && !u.contains(ZERO_DATE_TIME_BEHAVIOR + "=")) {
+            u = u + (u.contains("?") ? "&" : "?") + ZERO_DATE_TIME_BEHAVIOR + "=" + ZERO_DATE_TIME_CONVERT_TO_NULL;
         }
         DatabaseConfig c = new DatabaseConfig();
         c.setConnectorType(config.getConnectorType());
@@ -143,6 +161,48 @@ public final class MySQLConnector extends AbstractDatabaseConnector {
         c.setDatabase(config.getDatabase());
         c.setServiceName(config.getServiceName());
         return c;
+    }
+
+    @Override
+    public Result reader(DatabaseConnectorInstance connectorInstance, ReaderContext context) {
+        boolean supportedCursor = context.isSupportedCursor() && context.getCursors() != null && context.getCursors().length > 0;
+        String queryKey = supportedCursor ? ConnectorConstant.OPERTION_QUERY_CURSOR : ConnectorConstant.OPERTION_QUERY;
+        final String querySql = context.getCommand().get(queryKey);
+        Assert.hasText(querySql, "查询语句不能为空.");
+        Collections.addAll(context.getArgs(), supportedCursor ? getPageCursorArgs(context) : getPageArgs(context));
+
+        List<Map<String, Object>> list = connectorInstance.execute(databaseTemplate -> databaseTemplate.query(querySql,
+                context.getArgs().toArray(), (rs, rowNum) -> mapRow(rs)));
+        return new Result(list);
+    }
+
+    private Map<String, Object> mapRow(ResultSet rs) throws SQLException {
+        Map<String, Object> row = new LinkedHashMap<>();
+        ResultSetMetaData meta = rs.getMetaData();
+        int columnCount = meta.getColumnCount();
+        for (int i = 1; i <= columnCount; i++) {
+            String label = meta.getColumnLabel(i);
+            row.put(label, readColumnValue(rs, i, meta.getColumnTypeName(i)));
+        }
+        return row;
+    }
+
+    /**
+     * 非法日期（如 2022-00-03）经 JDBC 转 Date 时会抛 SQLException: MONTH，回退为字符串供后续映射处理。
+     */
+    private Object readColumnValue(ResultSet rs, int columnIndex, String typeName) throws SQLException {
+        if (typeName == null) {
+            return rs.getObject(columnIndex);
+        }
+        String upper = typeName.toUpperCase(Locale.ROOT);
+        if (upper.contains("DATE") || upper.contains("TIME") || upper.equals("YEAR") || upper.equals("MONTH") || upper.equals("DAY")) {
+            try {
+                return rs.getObject(columnIndex);
+            } catch (SQLException e) {
+                return rs.getString(columnIndex);
+            }
+        }
+        return rs.getObject(columnIndex);
     }
 
     @Override
@@ -357,7 +417,8 @@ public final class MySQLConnector extends AbstractDatabaseConnector {
         if (database != null && !database.trim().isEmpty()) {
             url.append("/").append(database);
         }
-        url.append("?useUnicode=true&characterEncoding=utf-8&connectionCollation=utf8mb4_unicode_ci");
+        url.append("?useUnicode=true&characterEncoding=utf-8&connectionCollation=utf8mb4_unicode_ci&")
+                .append(ZERO_DATE_TIME_BEHAVIOR).append("=").append(ZERO_DATE_TIME_CONVERT_TO_NULL);
         return url.toString();
     }
 
