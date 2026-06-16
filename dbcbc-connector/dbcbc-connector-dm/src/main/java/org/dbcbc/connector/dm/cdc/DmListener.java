@@ -13,6 +13,8 @@ import org.dbcbc.connector.dm.logminer.parser.DmDeleteSql;
 import org.dbcbc.connector.dm.logminer.parser.DmInsertSql;
 import org.dbcbc.connector.dm.logminer.parser.DmUpdateSql;
 import org.dbcbc.sdk.config.DatabaseConfig;
+import org.dbcbc.sdk.connector.database.Database;
+import org.dbcbc.sdk.connector.database.DatabaseConnectorInstance;
 import org.dbcbc.sdk.constant.ConnectorConstant;
 import org.dbcbc.sdk.listener.AbstractDatabaseListener;
 import org.dbcbc.sdk.listener.ChangedEvent;
@@ -122,7 +124,9 @@ public class DmListener extends AbstractDatabaseListener {
             List<Field> fields = resolveFields(tableName);
             if (fields != null) {
                 DmUpdateSql parser = new DmUpdateSql(update, fields);
-                trySendEvent(new RowChangedEvent(tableName, ConnectorConstant.OPERTION_UPDATE, parser.parseColumns(), null, event.getScn()));
+                List<Object> data = parser.parseColumns();
+                enrichUpdateRow(tableName, fields, data);
+                trySendEvent(new RowChangedEvent(tableName, ConnectorConstant.OPERTION_UPDATE, data, null, event.getScn()));
             }
             return;
         }
@@ -169,6 +173,14 @@ public class DmListener extends AbstractDatabaseListener {
     @Override
     public void refreshEvent(ChangedOffset offset) {
         snapshot.put(REDO_POSITION, String.valueOf(offset.getPosition()));
+    }
+
+    private void enrichUpdateRow(String tableName, List<Field> fields, List<Object> data) {
+        if (!(connectorService instanceof Database) || !(getConnectorInstance() instanceof DatabaseConnectorInstance)) {
+            return;
+        }
+        DmRowEnricher.fillMissingColumns((DatabaseConnectorInstance) getConnectorInstance(), (Database) connectorService, schema, tableName, fields,
+                data);
     }
 
     private List<Field> resolveFields(String tableName) {
