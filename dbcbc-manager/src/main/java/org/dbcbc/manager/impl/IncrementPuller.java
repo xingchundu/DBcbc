@@ -129,13 +129,14 @@ public final class IncrementPuller extends AbstractPuller implements Application
                     }).start();
                     return;
                 } catch (Exception e) {
-                    close(metaId);
+                    cleanupListener(metaId);
                     if (attempt < maxRetries) {
                         logger.warn("增量同步启动失败，第{}次重试，{}ms后重试：{}", attempt + 1, delays[attempt], e.getMessage());
                         logService.log(LogType.TableGroupLog.INCREMENT_FAILED,
                             String.format("启动驱动失败（第%d次重试）：[%s], %s", attempt + 1, mapping.getName(), e.getMessage()));
                         try { Thread.sleep(delays[attempt]); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); return; }
                     } else {
+                        publishClosedEvent(metaId);
                         logService.log(LogType.TableGroupLog.INCREMENT_FAILED,
                             String.format("启动驱动失败（已重试%d次）：[%s], %s", maxRetries, mapping.getName(), e.getMessage()));
                         logger.error("重试{}次后仍失败，结束增量同步：{}", maxRetries, metaId, e);
@@ -150,14 +151,18 @@ public final class IncrementPuller extends AbstractPuller implements Application
 
     @Override
     public void close(String metaId) {
-        map.compute(metaId, (k, listener)-> {
+        cleanupListener(metaId);
+        publishClosedEvent(metaId);
+        logger.info("关闭成功:{}", metaId);
+    }
+
+    private void cleanupListener(String metaId) {
+        map.compute(metaId, (k, listener) -> {
             if (listener != null) {
                 listener.close();
             }
             bufferActuatorRouter.unbind(metaId);
             tableGroupContext.clear(metaId);
-            publishClosedEvent(metaId);
-            logger.info("关闭成功:{}", metaId);
             return null;
         });
     }

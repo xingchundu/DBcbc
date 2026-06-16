@@ -102,6 +102,18 @@ public class MappingController extends BaseController {
         }
     }
 
+    @PostMapping("/querySyncErrors")
+    @ResponseBody
+    public RestResult querySyncErrors(HttpServletRequest request) {
+        try {
+            Map<String, String> params = getParams(request);
+            return RestResult.restSuccess(mappingService.querySyncErrors(params));
+        } catch (Exception e) {
+            logger.error(e.getLocalizedMessage(), e);
+            return RestResult.restFail(e.getMessage());
+        }
+    }
+
     @PostMapping("/copy")
     @ResponseBody
     public RestResult add(@RequestParam("id") String id) {

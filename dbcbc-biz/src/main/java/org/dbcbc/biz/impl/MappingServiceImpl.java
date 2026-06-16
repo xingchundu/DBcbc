@@ -10,12 +10,14 @@ import org.dbcbc.biz.RepeatedTableGroupException;
 import org.dbcbc.biz.TableGroupService;
 import org.dbcbc.biz.checker.impl.mapping.MappingChecker;
 import org.dbcbc.biz.task.MappingCountTask;
+import org.dbcbc.biz.vo.LogVO;
 import org.dbcbc.biz.vo.MappingCustomTableVO;
 import org.dbcbc.biz.vo.MappingVO;
 import org.dbcbc.biz.vo.MetaVO;
 import org.dbcbc.biz.vo.TableVO;
 import org.dbcbc.common.dispatch.DispatchTaskService;
 import org.dbcbc.common.model.Paging;
+import org.dbcbc.common.util.NumberUtil;
 import org.dbcbc.common.rsa.RsaManager;
 import org.dbcbc.common.util.CollectionUtils;
 import org.dbcbc.common.util.JsonUtil;
@@ -23,9 +25,11 @@ import org.dbcbc.common.util.StringUtil;
 import org.dbcbc.connector.base.ConnectorFactory;
 import org.dbcbc.manager.ManagerFactory;
 import org.dbcbc.manager.impl.PreloadTemplate;
+import org.dbcbc.parser.LogService;
 import org.dbcbc.parser.LogType;
 import org.dbcbc.parser.ParserComponent;
 import org.dbcbc.parser.ProfileComponent;
+import org.dbcbc.parser.enums.MetaEnum;
 import org.dbcbc.parser.TableGroupContext;
 import org.dbcbc.parser.model.ConfigModel;
 import org.dbcbc.parser.model.Connector;
@@ -40,7 +44,10 @@ import org.dbcbc.sdk.connector.ConnectorInstance;
 import org.dbcbc.sdk.connector.DefaultConnectorServiceContext;
 import org.dbcbc.sdk.constant.ConfigConstant;
 import org.dbcbc.sdk.enums.ModelEnum;
+import org.dbcbc.sdk.enums.StorageEnum;
 import org.dbcbc.sdk.enums.TableTypeEnum;
+import org.dbcbc.sdk.filter.Query;
+import org.dbcbc.sdk.storage.StorageService;
 import org.dbcbc.sdk.model.ConnectorConfig;
 import org.dbcbc.sdk.model.MetaInfo;
 import org.dbcbc.sdk.model.Table;
@@ -113,6 +120,14 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
 
     @Resource
     private RsaManager rsaManager;
+
+    @Resource
+    private LogService logService;
+
+    @Resource
+    private StorageService storageService;
+
+    private static final int SYNC_ERROR_LOG_SCAN_SIZE = 500;
 
     @Override
     public String add(Map<String, String> params) {
@@ -306,7 +321,23 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
 
     @Override
     public Paging<MappingVO> search(Map<String, String> params) {
-        return searchConfigModel(params, getMappingAll());
+        List<MappingVO> list = getMappingAll();
+        String searchState = params.get("searchState");
+        if (StringUtil.isNotBlank(searchState)) {
+            list = list.stream().filter(m -> matchSearchState(m, searchState)).collect(Collectors.toList());
+        }
+        return searchConfigModel(params, list);
+    }
+
+    private boolean matchSearchState(MappingVO mapping, String searchState) {
+        int state = mapping.getMeta() != null ? mapping.getMeta().getState() : MetaEnum.READY.getCode();
+        if ("1".equals(searchState)) {
+            return MetaEnum.isRunning(state);
+        }
+        if ("0".equals(searchState)) {
+            return !MetaEnum.isRunning(state);
+        }
+        return true;
     }
 
     @Override
@@ -319,12 +350,100 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
         synchronized (LOCK) {
             assertRunning(metaId);
 
-            // 启动
-            managerFactory.start(mapping);
+            // 建立/刷新源与目标连接实例（mappingId@connectorId@S/T），避免启动时连接池无实例导致立即退出
+            preloadTemplate.reConnect(mapping);
+
+            try {
+                managerFactory.start(mapping);
+            } catch (Exception e) {
+                logSyncStartError(mapping, e);
+                if (e instanceof BizException) {
+                    throw (BizException) e;
+                }
+                throw new BizException(e.getMessage() != null ? e.getMessage() : "启动驱动失败");
+            }
 
             log(LogType.MappingLog.RUNNING, mapping);
         }
         return "驱动启动成功";
+    }
+
+    @Override
+    public Paging<LogVO> querySyncErrors(Map<String, String> params) {
+        String id = params.get("id");
+        Mapping mapping = assertMappingExist(id);
+        int pageNum = NumberUtil.toInt(params.get("pageNum"), 1);
+        int pageSize = NumberUtil.toInt(params.get("pageSize"), 10);
+
+        Set<String> sourceTables = profileComponent.getSortedTableGroupAll(id).stream()
+                .map(tg -> tg.getSourceTable().getName())
+                .filter(StringUtil::isNotBlank)
+                .collect(Collectors.toSet());
+
+        Query query = new Query(1, SYNC_ERROR_LOG_SCAN_SIZE);
+        query.setType(StorageEnum.LOG);
+        query.addFilter(ConfigConstant.CONFIG_MODEL_JSON, mapping.getName(), true);
+        Paging raw = storageService.query(query);
+        List<Map> rows = raw.getData() == null ? Collections.emptyList() : (List<Map>) raw.getData();
+
+        List<LogVO> matched = rows.stream()
+                .filter(row -> matchSyncErrorLog(row, mapping, sourceTables))
+                .map(this::toLogVO)
+                .sorted(Comparator.comparing(LogVO::getCreateTime).reversed())
+                .collect(Collectors.toList());
+
+        Paging<LogVO> paging = new Paging<>(pageNum, pageSize);
+        paging.setTotal(matched.size());
+        int offset = Math.max(0, (pageNum - 1) * pageSize);
+        paging.setData(matched.stream().skip(offset).limit(pageSize).collect(Collectors.toList()));
+        return paging;
+    }
+
+    private void logSyncStartError(Mapping mapping, Exception e) {
+        LogType logType = ModelEnum.INCREMENT.getCode().equals(mapping.getModel())
+                ? LogType.TableGroupLog.INCREMENT_FAILED : LogType.TableGroupLog.FULL_FAILED;
+        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        logService.log(logType, "启动驱动失败：[%s], %s", mapping.getName(), message);
+        logger.warn("启动驱动失败：{}, {}", mapping.getName(), message, e);
+    }
+
+    private boolean matchSyncErrorLog(Map row, Mapping mapping, Set<String> sourceTables) {
+        if (row == null) {
+            return false;
+        }
+        String type = String.valueOf(row.get(ConfigConstant.CONFIG_MODEL_TYPE));
+        String json = String.valueOf(row.get(ConfigConstant.CONFIG_MODEL_JSON));
+        if (StringUtil.isBlank(json) || "null".equals(json)) {
+            return false;
+        }
+        boolean syncType = LogType.TableGroupLog.INCREMENT_FAILED.getType().equals(type)
+                || LogType.TableGroupLog.FULL_FAILED.getType().equals(type);
+        if (!syncType && !json.contains("同步失败") && !json.contains("同步异常") && !json.contains("启动驱动失败")) {
+            return false;
+        }
+        String name = mapping.getName();
+        if (json.contains("[" + name + "]")) {
+            return true;
+        }
+        if (json.contains(":" + name + "(")) {
+            return true;
+        }
+        if (json.contains("启动驱动失败") && json.contains(name)) {
+            return true;
+        }
+        for (String table : sourceTables) {
+            if (json.contains("表" + table)) {
+                return true;
+            }
+            if (json.startsWith(table + ":")) {
+                return true;
+            }
+        }
+        return syncType && json.contains(name);
+    }
+
+    private LogVO toLogVO(Map row) {
+        return JsonUtil.jsonToObj(JsonUtil.objToJson(row), LogVO.class);
     }
 
     @Override

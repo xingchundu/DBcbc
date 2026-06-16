@@ -25,7 +25,11 @@
                         <i class="fa fa-database text-primary"></i> 数据源<strong class="text-primary">*</strong>
                     </label>
                     <select name="sourceConnectorId" id="sourceConnectorId" class="form-control">
-                        <option th:each="c,s:${connectors}" th:value="${c?.id}" th:text="${c?.name + '(' + c?.config?.connectorType + ')'}" />
+                        <option th:each="c,s:${connectors}" th:value="${c?.id}"
+                                th:text="${c?.name + '(' + c?.config?.connectorType + ')'}"
+                                th:attr="data-dbs=${c?.databases != null ? #strings.listJoin(c.databases, ',') : ''},
+                                         data-config-db=${c?.config?.database},
+                                         data-config-service=${c?.config?.serviceName}" />
                     </select>
                 </div>
 
@@ -35,7 +39,11 @@
                         <i class="fa fa-database text-success"></i> 目标源<strong class="text-primary">*</strong>
                     </label>
                     <select name="targetConnectorId" id="targetConnectorId" class="form-control">
-                        <option th:each="c,s:${connectors}" th:value="${c?.id}" th:text="${c?.name + '(' + c?.config?.connectorType + ')'}" />
+                        <option th:each="c,s:${connectors}" th:value="${c?.id}"
+                                th:text="${c?.name + '(' + c?.config?.connectorType + ')'}"
+                                th:attr="data-dbs=${c?.databases != null ? #strings.listJoin(c.databases, ',') : ''},
+                                         data-config-db=${c?.config?.database},
+                                         data-config-service=${c?.config?.serviceName}" />
                     </select>
                 </div>
             </div>
@@ -92,8 +100,37 @@
 </div>
 
 <script>
+    function getConnectorDatabases(connectorId, connectorSelectEl) {
+        const option = connectorSelectEl.querySelector('option[value="' + connectorId + '"]');
+        if (!option) {
+            return [];
+        }
+        let databases = [];
+        if (option.dataset.dbs) {
+            databases = option.dataset.dbs.split(',').map(function (name) {
+                return name.trim();
+            }).filter(Boolean);
+        }
+        if (databases.length === 0 && option.dataset.configDb) {
+            databases = [option.dataset.configDb.trim()];
+        } else if (databases.length === 0 && option.dataset.configService) {
+            databases = [option.dataset.configService.trim()];
+        }
+        return databases;
+    }
+
+    function setDatabaseOptions(dbSelect, databases) {
+        const db = [];
+        if (databases && databases.length > 0) {
+            databases.forEach(function (dbName) {
+                db.push({label: dbName, value: dbName, disabled: false});
+            });
+        }
+        dbSelect.setData(db);
+    }
+
     function onDBChange(connectorId, schemaSelect, dbName) {
-        doGetter('/connector/getSchema', {id: connectorId, database: dbName}, function (response) {
+        doPoster('/connector/getSchema', {id: connectorId, database: dbName}, function (response) {
             if (response.success && response.data) {
                 let array = [];
                 const schemas = response.data;
@@ -109,17 +146,19 @@
         })
     }
 
-    function onConnectorChange(connectorId, dbSelect) {
-        doGetter('/connector/getDatabase', {id: connectorId}, function (response) {
+    function onConnectorChange(connectorId, dbSelect, connectorSelectEl) {
+        const cachedDatabases = getConnectorDatabases(connectorId, connectorSelectEl);
+        if (cachedDatabases.length > 0) {
+            setDatabaseOptions(dbSelect, cachedDatabases);
+            return;
+        }
+        doPoster('/connector/getDatabase', {id: connectorId}, function (response) {
             if (response.success && response.data) {
-                const databases = response.data;
-                let db = [];
-                if (databases && databases.length > 0) {
-                    databases.forEach(function (dbName) {
-                        db.push({label: dbName, value: dbName, disabled: false})
-                    });
+                let databases = response.data || [];
+                if (databases.length === 0) {
+                    databases = getConnectorDatabases(connectorId, connectorSelectEl);
                 }
-                dbSelect.setData(db);
+                setDatabaseOptions(dbSelect, databases);
             } else {
                 bootGrowl("获取数据库信息失败: " + response.message, "danger");
             }
@@ -136,7 +175,7 @@
             onSelect: function (connectorId) {
                 // 更新当前组的连接器ID
                 currentConnectorId = connectorId[0];
-                onConnectorChange(currentConnectorId, dbSelect);
+                onConnectorChange(currentConnectorId, dbSelect, $connector[0]);
             }
         });
         const dbSelect = $database.dbSelect({
@@ -152,7 +191,7 @@
         let selected = connectorSelect.getValues();
         if (selected.length >= 1) {
             currentConnectorId = selected[0];
-            onConnectorChange(currentConnectorId, dbSelect);
+            onConnectorChange(currentConnectorId, dbSelect, $connector[0]);
         }
     }
 

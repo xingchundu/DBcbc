@@ -3,6 +3,7 @@
  */
 package org.dbcbc.biz;
 
+import org.dbcbc.biz.vo.LogVO;
 import org.dbcbc.biz.vo.MappingCustomTableVO;
 import org.dbcbc.biz.vo.MappingVO;
 import org.dbcbc.common.model.Paging;
@@ -121,6 +122,13 @@ public interface MappingService {
      * @param id
      */
     String refreshMappingTables(String id);
+
+    /**
+     * 查询驱动同步/启动错误日志（分页）
+     *
+     * @param params id、pageNum、pageSize
+     */
+    Paging<LogVO> querySyncErrors(Map<String, String> params);
 
     /**
      * 查询自定义表

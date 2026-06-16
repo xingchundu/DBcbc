@@ -16,7 +16,14 @@
                     <i class="fa fa-times"></i>
                 </span>
             </div>
-            <div class="lg:col-span-2"></div>
+            <div class="lg:col-span-1">
+                <select id="searchMappingState" class="form-control">
+                    <option value="" selected="selected">全部状态</option>
+                    <option value="1">运行中</option>
+                    <option value="0">未运行</option>
+                </select>
+            </div>
+            <div class="lg:col-span-1"></div>
             <div class="lg:col-span-2 flex items-center justify-end">
                 <button class="btn btn-success" id="batchStartBtn" disabled="disabled" onclick="batchStartMappings()" style="margin-right:5px;">
                     <i class="fa fa-play"></i> 批量启动
@@ -51,6 +58,66 @@
 </div>
 
 <script>
+function syncErrorTypeLabel(type, json) {
+    if (type === '43') {
+        return '增量同步';
+    }
+    if (type === '44') {
+        return '全量同步';
+    }
+    if (json && json.indexOf('启动驱动失败') >= 0) {
+        return '启动失败';
+    }
+    return '同步异常';
+}
+
+function renderMappingSyncResult(mapping) {
+    let html = renderSyncResult(mapping);
+    const fail = mapping.meta && mapping.meta.fail ? mapping.meta.fail : 0;
+    const detailLabel = fail > 0 ? '错误详情' : '同步日志';
+    const safeName = escapeHtml(mapping.name || '');
+    html += '<br /><span class="text-error hover-underline cursor-pointer text-sm" title="查看同步/启动错误详情" '
+        + 'data-mapping-name="' + safeName + '" '
+        + 'onclick="showMappingSyncErrorDetail(\'' + mapping.id + '\', this.getAttribute(\'data-mapping-name\'))">'
+        + detailLabel + '</span>';
+    return html;
+}
+
+function showMappingSyncErrorDetail(mappingId, mappingName) {
+    doPoster('/mapping/querySyncErrors', {id: mappingId, pageNum: 1, pageSize: 50}, function (response) {
+        if (!response.success) {
+            bootGrowl(response.message || '加载同步日志失败', 'danger');
+            return;
+        }
+        const paging = response.data || {};
+        const rows = paging.data || [];
+        let body = '<div class="text-sm text-gray-500 mb-3">驱动：<strong>' + escapeHtml(mappingName) + '</strong>，共 ' + (paging.total || 0) + ' 条</div>';
+        if (rows.length === 0) {
+            body += '<p class="text-center text-gray-400 py-6">暂无同步/启动错误记录</p>';
+        } else {
+            body += '<div style="max-height:420px;overflow:auto;"><table class="table"><thead><tr><th></th><th>时间</th><th>类型</th><th>详情</th></tr></thead><tbody>';
+            rows.forEach(function (row, idx) {
+                body += '<tr>'
+                    + '<td>' + (idx + 1) + '</td>'
+                    + '<td style="white-space:nowrap;">' + escapeHtml(formatRelativeTime(row.createTime) || '') + '</td>'
+                    + '<td>' + escapeHtml(syncErrorTypeLabel(row.type, row.json)) + '</td>'
+                    + '<td style="word-break:break-all;">' + escapeHtml(row.json || '') + '</td>'
+                    + '</tr>';
+            });
+            body += '</tbody></table></div>';
+        }
+        showConfirm({
+            title: '同步错误详情',
+            icon: 'error',
+            size: 'max',
+            message: '以下为该驱动启动与同步过程中的错误记录（含每次启动重试）',
+            body: body,
+            confirmText: '关闭',
+            onConfirm: function () {}
+        });
+    });
+}
+
 function copyMapping(id) {
     doPoster("/mapping/copy", { id: id }, function (response) {
         if (response.success) {
@@ -180,7 +247,7 @@ $(document).ready(function() {
                         </div>
                     </td>
                     <td>${renderModelText(mapping.model)}</td>
-                    <td>${renderSyncResult(mapping)}</td>
+                    <td>${renderMappingSyncResult(mapping)}</td>
                     <td>${renderStateText(mapping.meta.state || 0)}</td>
                     <td>${renderSyncDelay(mapping)}</td>
                     <td>
@@ -200,14 +267,29 @@ $(document).ready(function() {
         emptyHtml:'<td colspan="8" class="text-center"><i class="fa fa-exchange empty-icon"></i><p class="empty-text">暂无驱动</p><p class="empty-description">点击"添加"按钮创建第一个驱动</p></td>'
     });
 
+    function getSearchParams() {
+        return {
+            'searchKey': searchInput.getValue(),
+            'searchState': stateSelect.getValues()[0] || ''
+        };
+    }
+
     // 搜索框输入事件
-    let searchInput = initSearch('searchMapping', function (searchKey) {
-        pagination.doSearch({'searchKey': searchKey});
+    let searchInput = initSearch('searchMapping', function () {
+        pagination.doSearch(getSearchParams());
+    });
+
+    // 状态下拉筛选
+    let stateSelect = $('#searchMappingState').dbSelect({
+        type: 'single',
+        onSelect: function () {
+            pagination.doSearch(getSearchParams());
+        }
     });
 
     // 注册到全局定时刷新管理器
     PageRefreshManager.register(() => {
-        pagination.doSearch({'searchKey': searchInput.getValue()}, pagination.currentPage);
+        pagination.doSearch(getSearchParams(), pagination.currentPage);
     });
 });
 </script>
