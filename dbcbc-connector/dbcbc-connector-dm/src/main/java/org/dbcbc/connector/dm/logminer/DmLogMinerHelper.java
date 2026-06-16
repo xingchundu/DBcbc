@@ -10,7 +10,6 @@ import org.dbcbc.connector.dm.DmException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.math.BigInteger;
 import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -18,9 +17,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 达梦 DBMS_LOGMNR 归档日志挖掘辅助类。
@@ -39,19 +39,37 @@ public final class DmLogMinerHelper {
 
     private static final String LOG_MINER_SQL_ENSURE_PACKAGE = "SP_CREATE_SYSTEM_PACKAGES(1,'DBMS_LOGMNR')";
     private static final String LOG_MINER_SQL_GET_CURRENT_LSN = "SELECT CUR_LSN FROM V$RLOG";
-    private static final String LOG_MINER_SQL_GET_CURRENT_LSN_FALLBACK = "SELECT MAX(NEXT_CHANGE#) FROM V$ARCHIVED_LOG WHERE STATUS = 'A'";
-    private static final String LOG_MINER_SQL_QUERY_ARCHIVES =
-            "SELECT PATH FROM V$ARCHIVED_LOG WHERE STATUS = 'A' AND FIRST_CHANGE# < ? AND NEXT_CHANGE# > ? ORDER BY FIRST_CHANGE#";
-    private static final String LOG_MINER_SQL_ADD_LOG_FILE_NEW = "BEGIN DBMS_LOGMNR.ADD_LOGFILE(?, DBMS_LOGMNR.NEW); END;";
-    private static final String LOG_MINER_SQL_ADD_LOG_FILE = "BEGIN DBMS_LOGMNR.ADD_LOGFILE(?, DBMS_LOGMNR.ADDFILE); END;";
-    private static final String LOG_MINER_SQL_START_LOG_MINER = "BEGIN DBMS_LOGMNR.START_LOGMNR(OPTIONS => 2128); END;";
-    private static final String LOG_MINER_SQL_END_LOG_MINER = "BEGIN DBMS_LOGMNR.END_LOGMNR(); END;";
-    private static final String LOG_MINER_SQL_ALTER_NLS_SESSION_PARAMETERS = "ALTER SESSION SET "
-            + "  NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS'"
-            + "  NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'"
-            + "  NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'"
-            + "  NLS_NUMERIC_CHARACTERS = '.,'"
-            + "  TIME_ZONE = '00:00'";
+    private static final String LOG_MINER_SQL_GET_CURRENT_LSN_FALLBACK =
+            "SELECT MAX(NEXT_CHANGE#) FROM V$ARCHIVED_LOG WHERE NAME IS NOT NULL";
+    /** 达梦 CDC 需始终装载最新若干归档（同一归档文件会持续增长，不会触发 SEQUENCE# 变化）。 */
+    private static final String LOG_MINER_SQL_QUERY_RECENT_ARCHIVES =
+            "SELECT NAME FROM V$ARCHIVED_LOG WHERE NAME IS NOT NULL "
+                    + "AND SEQUENCE# >= (SELECT MAX(SEQUENCE#) - ? FROM V$ARCHIVED_LOG WHERE NAME IS NOT NULL) "
+                    + "ORDER BY FIRST_CHANGE#";
+    private static final String LOG_MINER_SQL_ARCHIVE_SNAPSHOT =
+            "SELECT MAX(SEQUENCE#), MAX(NEXT_CHANGE#) FROM V$ARCHIVED_LOG WHERE NAME IS NOT NULL";
+    private static final int RECENT_ARCHIVE_WINDOW = 4;
+    private static final int LOG_MINER_START_OPTIONS = 2130;
+    /** 达梦官方示例为单参数 ADD_LOGFILE，默认 ADDFILE；JDBC 传第二参数 2 可能触发 -2849。 */
+    private static final String LOG_MINER_SQL_ADD_LOG_FILE = "{call DBMS_LOGMNR.ADD_LOGFILE(?)}";
+    private static final String LOG_MINER_SQL_REMOVE_LOG_FILE = "{call DBMS_LOGMNR.REMOVE_LOGFILE(?)}";
+    private static final String LOG_MINER_SQL_LIST_LOGS = "SELECT FILENAME FROM V$LOGMNR_LOGS";
+    private static final String LOG_MINER_SQL_QUERY_COVERING_ARCHIVE =
+            "SELECT NAME FROM V$ARCHIVED_LOG WHERE NAME IS NOT NULL "
+                    + "AND FIRST_CHANGE# < ? AND (NEXT_CHANGE# > ? OR NEXT_CHANGE# IS NULL) "
+                    + "ORDER BY FIRST_CHANGE# DESC FETCH FIRST 1 ROWS ONLY";
+    private static final String LOG_MINER_SQL_QUERY_LATEST_ARCHIVE =
+            "SELECT NAME FROM V$ARCHIVED_LOG WHERE NAME IS NOT NULL "
+                    + "ORDER BY SEQUENCE# DESC FETCH FIRST 1 ROWS ONLY";
+    private static final String LOG_MINER_SQL_START_LOG_MINER = "CALL DBMS_LOGMNR.START_LOGMNR(OPTIONS => " + LOG_MINER_START_OPTIONS + ")";
+    private static final String LOG_MINER_SQL_END_LOG_MINER = "{call DBMS_LOGMNR.END_LOGMNR()}";
+    /** 达梦 ALTER SESSION 一次只能设置一个参数，不能与 Oracle 一样合并多条。 */
+    private static final String LOG_MINER_SQL_ALTER_NLS_DATE_FORMAT =
+            "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS'";
+    private static final String LOG_MINER_SQL_ALTER_NLS_TIMESTAMP_FORMAT =
+            "ALTER SESSION SET NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'";
+    private static final String LOG_MINER_SQL_ALTER_NLS_DATE_LANGUAGE =
+            "ALTER SESSION SET NLS_DATE_LANGUAGE = 'ENGLISH'";
 
     private DmLogMinerHelper() {
     }
@@ -72,41 +90,172 @@ public final class DmLogMinerHelper {
     }
 
     public static List<String> listArchivePaths(Connection connection, long startScn, long endScn) throws SQLException {
-        List<String> paths = new ArrayList<>();
-        try (PreparedStatement ps = connection.prepareStatement(LOG_MINER_SQL_QUERY_ARCHIVES)) {
+        Set<String> paths = new LinkedHashSet<>();
+        try (PreparedStatement ps = connection.prepareStatement(LOG_MINER_SQL_QUERY_COVERING_ARCHIVE)) {
             ps.setLong(1, endScn);
             ps.setLong(2, startScn);
             try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String path = rs.getString(1);
-                    if (StringUtil.isNotBlank(path)) {
-                        paths.add(path);
-                    }
+                if (rs.next()) {
+                    addArchivePath(paths, rs.getString(1));
                 }
             }
         }
-        return paths;
+        try (Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(LOG_MINER_SQL_QUERY_LATEST_ARCHIVE)) {
+            if (rs.next()) {
+                addArchivePath(paths, rs.getString(1));
+            }
+        }
+        try (PreparedStatement ps = connection.prepareStatement(LOG_MINER_SQL_QUERY_RECENT_ARCHIVES)) {
+            ps.setInt(1, RECENT_ARCHIVE_WINDOW);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    addArchivePath(paths, rs.getString(1));
+                }
+            }
+        } catch (SQLException e) {
+            logger.debug("Recent archive query unavailable, skip: {}", e.getMessage());
+        }
+        if (paths.isEmpty()) {
+            try (PreparedStatement ps = connection.prepareStatement(LOG_MINER_SQL_QUERY_RECENT_ARCHIVES)) {
+                ps.setInt(1, RECENT_ARCHIVE_WINDOW);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        addArchivePath(paths, rs.getString(1));
+                    }
+                }
+            } catch (SQLException e) {
+                logger.debug("Recent archive fallback unavailable, skip: {}", e.getMessage());
+            }
+        }
+        return new ArrayList<>(paths);
     }
 
-    public static List<BigInteger> getCurrentArchiveSequences(Connection connection, long startScn, long endScn) throws SQLException {
-        List<BigInteger> sequences = new ArrayList<>();
-        for (String path : listArchivePaths(connection, startScn, endScn)) {
-            sequences.add(BigInteger.valueOf(path.hashCode() & 0x7FFFFFFFL));
+    private static void addArchivePath(Set<String> paths, String path) {
+        if (StringUtil.isBlank(path)) {
+            return;
         }
-        return sequences;
+        String normalized = normalizeArchivePath(path);
+        boolean duplicated = paths.stream().anyMatch(existing -> normalizeArchivePath(existing).equals(normalized));
+        if (!duplicated) {
+            paths.add(path.trim());
+        }
+    }
+
+    private static String normalizeArchivePath(String path) {
+        if (path == null) {
+            return StringUtil.EMPTY;
+        }
+        String normalized = path.trim().replace('\\', '/');
+        int slash = normalized.lastIndexOf('/');
+        if (slash >= 0 && slash < normalized.length() - 1) {
+            normalized = normalized.substring(slash + 1);
+        }
+        return normalized.toUpperCase();
+    }
+
+    public static ArchiveSnapshot getArchiveSnapshot(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(LOG_MINER_SQL_ARCHIVE_SNAPSHOT)) {
+            if (rs.next()) {
+                long maxSequence = rs.getLong(1);
+                if (rs.wasNull()) {
+                    maxSequence = 0;
+                }
+                long maxNextChange = rs.getLong(2);
+                if (rs.wasNull()) {
+                    maxNextChange = 0;
+                }
+                return new ArchiveSnapshot(maxSequence, maxNextChange);
+            }
+        }
+        return new ArchiveSnapshot(0, 0);
+    }
+
+    public static final class ArchiveSnapshot {
+        private final long maxSequence;
+        private final long maxNextChange;
+
+        public ArchiveSnapshot(long maxSequence, long maxNextChange) {
+            this.maxSequence = maxSequence;
+            this.maxNextChange = maxNextChange;
+        }
+
+        public boolean changed(ArchiveSnapshot other) {
+            if (other == null) {
+                return true;
+            }
+            return maxSequence != other.maxSequence || maxNextChange != other.maxNextChange;
+        }
+
+        @Override
+        public String toString() {
+            return "ArchiveSnapshot{maxSequence=" + maxSequence + ", maxNextChange=" + maxNextChange + '}';
+        }
     }
 
     public static void endLogMiner(Connection connection) {
         if (connection != null) {
-            try {
-                executeCallableStatement(connection, LOG_MINER_SQL_END_LOG_MINER);
-            } catch (Exception e) {
-                logger.debug("Cannot close log miner session gracefully: {}", e.getMessage());
+            resetLogMinerSession(connection);
+        }
+    }
+
+    /**
+     * 安全清理 LogMiner 会话：先 REMOVE 已登记文件，再 END；忽略无会话/未列出等错误（-2846/-2849）。
+     */
+    public static void resetLogMinerSession(Connection connection) {
+        if (connection == null) {
+            return;
+        }
+        for (String filename : listLogMinerLogFiles(connection)) {
+            try (CallableStatement cs = connection.prepareCall(LOG_MINER_SQL_REMOVE_LOG_FILE)) {
+                cs.setString(1, filename);
+                cs.execute();
+            } catch (SQLException e) {
+                if (!isIgnorableLogMinerResetError(e)) {
+                    logger.warn("REMOVE_LOGFILE failed for {}: {}", filename, e.getMessage());
+                }
+            }
+        }
+        try {
+            executeCallableStatement(connection, LOG_MINER_SQL_END_LOG_MINER);
+        } catch (SQLException e) {
+            if (!isIgnorableLogMinerResetError(e)) {
+                logger.warn("END_LOGMNR failed: {}", e.getMessage());
             }
         }
     }
 
-    public static String logMinerViewQuery(String schema, String logMinerUser) {
+    private static List<String> listLogMinerLogFiles(Connection connection) {
+        List<String> files = new ArrayList<>();
+        try (Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(LOG_MINER_SQL_LIST_LOGS)) {
+            while (rs.next()) {
+                String filename = rs.getString(1);
+                if (StringUtil.isNotBlank(filename)) {
+                    files.add(filename.trim());
+                }
+            }
+        } catch (SQLException e) {
+            logger.debug("V$LOGMNR_LOGS unavailable, skip remove before END: {}", e.getMessage());
+        }
+        return files;
+    }
+
+    private static boolean isIgnorableLogMinerResetError(SQLException e) {
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        return message.contains("-2846")
+                || message.contains("-2849")
+                || message.contains("2846")
+                || message.contains("2849")
+                || message.contains("无活动的 LogMiner")
+                || message.contains("未列出的日志文件");
+    }
+
+    public static String logMinerViewQuery(String schema, String logMinerUser, List<String> tableNames) {
         StringBuilder query = new StringBuilder();
         query.append("SELECT * ");
         query.append("FROM V$LOGMNR_CONTENTS ");
@@ -118,11 +267,40 @@ public final class DmLogMinerHelper {
         query.append("OR ");
         query.append("(OPERATION_CODE IN (1,2,3) ");
         query.append(" AND SEG_OWNER NOT IN ('SYS','SYSDBA','SYSSSO','SYSAUDITOR','SYSJOB','SYSTS','CTISYS') ");
-        if (StringUtil.isNotBlank(schema)) {
-            query.append(String.format(" AND (REGEXP_LIKE(SEG_OWNER,'^%s$','i')) ", schema));
-        }
+        appendDmlScopeFilter(query, schema, tableNames);
         query.append(" ))");
         return query.toString();
+    }
+
+    private static void appendDmlScopeFilter(StringBuilder query, String schema, List<String> tableNames) {
+        query.append(" AND (");
+        boolean hasScope = false;
+        if (StringUtil.isNotBlank(schema)) {
+            query.append(String.format("REGEXP_LIKE(SEG_OWNER,'^%s$','i')", escapeRegexLiteral(schema)));
+            hasScope = true;
+        }
+        if (!CollectionUtils.isEmpty(tableNames)) {
+            if (hasScope) {
+                query.append(" OR ");
+            }
+            query.append("TABLE_NAME IN (");
+            for (int i = 0; i < tableNames.size(); i++) {
+                if (i > 0) {
+                    query.append(',');
+                }
+                query.append('\'').append(tableNames.get(i).toUpperCase().replace("'", "''")).append('\'');
+            }
+            query.append(')');
+            hasScope = true;
+        }
+        if (!hasScope) {
+            query.append("1=1");
+        }
+        query.append(')');
+    }
+
+    private static String escapeRegexLiteral(String value) {
+        return value.replace("\\", "\\\\").replace("'", "''");
     }
 
     public static String getNextValidScnAfter() {
@@ -138,7 +316,20 @@ public final class DmLogMinerHelper {
     }
 
     public static void setSessionParameter(Connection connection) throws SQLException {
-        executeCallableStatement(connection, LOG_MINER_SQL_ALTER_NLS_SESSION_PARAMETERS);
+        executeSessionAlter(connection, LOG_MINER_SQL_ALTER_NLS_DATE_FORMAT);
+        executeSessionAlter(connection, LOG_MINER_SQL_ALTER_NLS_TIMESTAMP_FORMAT);
+        try {
+            executeSessionAlter(connection, LOG_MINER_SQL_ALTER_NLS_DATE_LANGUAGE);
+        } catch (SQLException e) {
+            logger.debug("NLS_DATE_LANGUAGE not supported, skip: {}", e.getMessage());
+        }
+    }
+
+    private static void executeSessionAlter(Connection connection, String sql) throws SQLException {
+        Objects.requireNonNull(sql);
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        }
     }
 
     public static void startLogMiner(Connection connection, long startScn, long endScn) throws SQLException {
@@ -147,26 +338,56 @@ public final class DmLogMinerHelper {
     }
 
     public static void addLogFiles(Connection connection, long startScn, long endScn) throws SQLException {
+        addLogFiles(connection, startScn, endScn, true);
+    }
+
+    public static void addLogFiles(Connection connection, long startScn, long endScn, boolean resetSession) throws SQLException {
         ensureLogMinerPackage(connection);
-        endLogMiner(connection);
+        if (resetSession) {
+            resetLogMinerSession(connection);
+        }
         List<String> paths = listArchivePaths(connection, startScn, endScn);
         if (CollectionUtils.isEmpty(paths)) {
             logger.warn("No archived logs found for SCN range [{}, {}), please check ARCH_INI and RLOG_APPEND_LOGIC", startScn, endScn);
             return;
         }
-        boolean first = true;
+        logger.info("Load {} DM archive log file(s) for SCN range [{}, {}): {}", paths.size(), startScn, endScn, paths);
         for (String path : paths) {
-            String sql = first ? LOG_MINER_SQL_ADD_LOG_FILE_NEW : LOG_MINER_SQL_ADD_LOG_FILE;
-            try (CallableStatement cs = connection.prepareCall(sql)) {
-                cs.setString(1, path);
-                cs.execute();
-            }
-            first = false;
+            addArchiveLogFile(connection, path);
         }
     }
 
+    private static void addArchiveLogFile(Connection connection, String path) throws SQLException {
+        try {
+            try (CallableStatement cs = connection.prepareCall(LOG_MINER_SQL_ADD_LOG_FILE)) {
+                cs.setString(1, path);
+                cs.execute();
+            }
+        } catch (SQLException e) {
+            if (isDuplicateLogFileError(e)) {
+                logger.debug("Archive already listed, skip: {}", path);
+                return;
+            }
+            logger.debug("ADD_LOGFILE callable failed ({}), retry CALL syntax for {}", e.getMessage(), path);
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("CALL DBMS_LOGMNR.ADD_LOGFILE('" + escapeSqlLiteral(path) + "')");
+            }
+        }
+    }
+
+    private static String escapeSqlLiteral(String value) {
+        return value.replace("'", "''");
+    }
+
+    private static boolean isDuplicateLogFileError(SQLException e) {
+        String message = e.getMessage();
+        return message != null && (message.contains("-2848") || message.contains("2848") || message.contains("duplicate logfile"));
+    }
+
     public static void startLogMinerSession(Connection connection) throws SQLException {
-        executeCallableStatement(connection, LOG_MINER_SQL_START_LOG_MINER);
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(LOG_MINER_SQL_START_LOG_MINER);
+        }
     }
 
     public static long getCurrentScn(Connection connection) throws SQLException {

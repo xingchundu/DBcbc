@@ -7,10 +7,11 @@ import org.dbcbc.common.QueueOverflowException;
 import org.dbcbc.common.util.StringUtil;
 import org.dbcbc.connector.dm.DmException;
 import org.dbcbc.connector.dm.logminer.DmLogMiner;
+import org.dbcbc.connector.dm.logminer.DmLogMinerParser;
 import org.dbcbc.connector.dm.logminer.RedoEvent;
-import org.dbcbc.connector.oracle.logminer.parser.impl.DeleteSql;
-import org.dbcbc.connector.oracle.logminer.parser.impl.InsertSql;
-import org.dbcbc.connector.oracle.logminer.parser.impl.UpdateSql;
+import org.dbcbc.connector.dm.logminer.parser.DmDeleteSql;
+import org.dbcbc.connector.dm.logminer.parser.DmInsertSql;
+import org.dbcbc.connector.dm.logminer.parser.DmUpdateSql;
 import org.dbcbc.sdk.config.DatabaseConfig;
 import org.dbcbc.sdk.constant.ConnectorConstant;
 import org.dbcbc.sdk.listener.AbstractDatabaseListener;
@@ -19,13 +20,13 @@ import org.dbcbc.sdk.listener.event.DDLChangedEvent;
 import org.dbcbc.sdk.listener.event.RowChangedEvent;
 import org.dbcbc.sdk.model.ChangedOffset;
 import org.dbcbc.sdk.model.Field;
+import org.dbcbc.sdk.model.Table;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
-import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.alter.Alter;
 import net.sf.jsqlparser.statement.delete.Delete;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * 达梦归档日志增量监听（LogMiner），用于 DM -> PostgreSQL 等目标库的日志增量同步。
@@ -45,12 +47,24 @@ public class DmListener extends AbstractDatabaseListener {
     private final Logger logger = LoggerFactory.getLogger(getClass());
     private final String REDO_POSITION = "position";
     private final Map<String, List<Field>> tableFiledMap = new ConcurrentHashMap<>();
+    private final Map<String, String> mappingTableNameMap = new ConcurrentHashMap<>();
     private DmLogMiner logMiner;
 
     @Override
     public void init() {
         super.init();
-        sourceTable.forEach(table -> tableFiledMap.put(table.getName(), table.getColumn()));
+        sourceTable.forEach(table -> registerTable(table.getName(), table.getColumn()));
+    }
+
+    private void registerTable(String tableName, List<Field> columns) {
+        String key = normalizeTableKey(tableName);
+        tableFiledMap.put(key, columns);
+        mappingTableNameMap.put(key, tableName);
+        if (StringUtil.isNotBlank(schema)) {
+            String schemaKey = normalizeTableKey(schema + "." + tableName);
+            tableFiledMap.put(schemaKey, columns);
+            mappingTableNameMap.put(schemaKey, tableName);
+        }
     }
 
     @Override
@@ -61,8 +75,9 @@ public class DmListener extends AbstractDatabaseListener {
             String username = config.getUsername();
             String password = config.getPassword();
             String url = config.getUrl();
+            List<String> monitorTableNames = sourceTable.stream().map(Table::getName).collect(Collectors.toList());
             boolean containsPos = snapshot.containsKey(REDO_POSITION);
-            logMiner = new DmLogMiner(username, password, url, schema, driverClassName);
+            logMiner = new DmLogMiner(username, password, url, schema, driverClassName, monitorTableNames);
             logMiner.setStartScn(containsPos ? Long.parseLong(snapshot.get(REDO_POSITION)) : 0);
             logMiner.registerEventListener(event -> {
                 try {
@@ -103,9 +118,10 @@ public class DmListener extends AbstractDatabaseListener {
         Statement statement = CCJSqlParserUtil.parse(event.getRedoSql());
         if (statement instanceof Update) {
             Update update = (Update) statement;
-            String tableName = getTableName(update.getTable());
-            if (tableFiledMap.containsKey(tableName)) {
-                UpdateSql parser = new UpdateSql(update, tableFiledMap.get(tableName));
+            String tableName = resolveMappingTableName(update.getTable(), event);
+            List<Field> fields = resolveFields(tableName);
+            if (fields != null) {
+                DmUpdateSql parser = new DmUpdateSql(update, fields);
                 trySendEvent(new RowChangedEvent(tableName, ConnectorConstant.OPERTION_UPDATE, parser.parseColumns(), null, event.getScn()));
             }
             return;
@@ -113,9 +129,10 @@ public class DmListener extends AbstractDatabaseListener {
 
         if (statement instanceof Insert) {
             Insert insert = (Insert) statement;
-            String tableName = getTableName(insert.getTable());
-            if (tableFiledMap.containsKey(tableName)) {
-                InsertSql parser = new InsertSql(insert, tableFiledMap.get(tableName));
+            String tableName = resolveMappingTableName(insert.getTable(), event);
+            List<Field> fields = resolveFields(tableName);
+            if (fields != null) {
+                DmInsertSql parser = new DmInsertSql(insert, fields);
                 trySendEvent(new RowChangedEvent(tableName, ConnectorConstant.OPERTION_INSERT, parser.parseColumns(), null, event.getScn()));
             }
             return;
@@ -123,9 +140,10 @@ public class DmListener extends AbstractDatabaseListener {
 
         if (statement instanceof Delete) {
             Delete delete = (Delete) statement;
-            String tableName = getTableName(delete.getTable());
-            if (tableFiledMap.containsKey(tableName)) {
-                DeleteSql parser = new DeleteSql(delete, tableFiledMap.get(tableName));
+            String tableName = resolveMappingTableName(delete.getTable(), event);
+            List<Field> fields = resolveFields(tableName);
+            if (fields != null) {
+                DmDeleteSql parser = new DmDeleteSql(delete, fields);
                 trySendEvent(new RowChangedEvent(tableName, ConnectorConstant.OPERTION_DELETE, parser.parseColumns(), null, event.getScn()));
             }
             return;
@@ -133,8 +151,8 @@ public class DmListener extends AbstractDatabaseListener {
 
         if (statement instanceof Alter) {
             Alter alter = (Alter) statement;
-            String tableName = getTableName(alter.getTable());
-            if (tableFiledMap.containsKey(tableName)) {
+            String tableName = resolveMappingTableName(alter.getTable(), event);
+            if (resolveFields(tableName) != null) {
                 logger.info("sql:{}", event.getRedoSql());
                 trySendEvent(new DDLChangedEvent(tableName, ConnectorConstant.OPERTION_ALTER, event.getRedoSql(), null, event.getScn()));
             }
@@ -153,7 +171,70 @@ public class DmListener extends AbstractDatabaseListener {
         snapshot.put(REDO_POSITION, String.valueOf(offset.getPosition()));
     }
 
-    private String getTableName(Table table) {
+    private List<Field> resolveFields(String tableName) {
+        if (StringUtil.isBlank(tableName)) {
+            return null;
+        }
+        List<Field> fields = tableFiledMap.get(normalizeTableKey(tableName));
+        return fields == null ? null : DmLogMinerParser.toUpperCaseFields(fields);
+    }
+
+    private String resolveMappingTableName(net.sf.jsqlparser.schema.Table table, RedoEvent event) {
+        String parsedTableName = getTableName(table);
+        String parsedSchema = table == null ? null : normalizeTableKey(getSchemaName(table));
+        if (StringUtil.isNotBlank(parsedSchema)) {
+            String schemaTableKey = parsedSchema + "." + normalizeTableKey(parsedTableName);
+            if (resolveFields(schemaTableKey) != null && matchConfiguredSchema(parsedSchema, event)) {
+                return mappingTableNameMap.getOrDefault(schemaTableKey, parsedTableName);
+            }
+        }
+        if (resolveFields(parsedTableName) != null && matchConfiguredSchema(parsedSchema, event)) {
+            return mappingTableNameMap.getOrDefault(normalizeTableKey(parsedTableName), parsedTableName);
+        }
+        String logTableName = event.getObjectName();
+        String logSchema = normalizeTableKey(event.getObjectOwner());
+        if (StringUtil.isNotBlank(logSchema) && StringUtil.isNotBlank(logTableName)) {
+            String schemaTableKey = logSchema + "." + normalizeTableKey(logTableName);
+            if (resolveFields(schemaTableKey) != null && matchConfiguredSchema(logSchema, event)) {
+                return mappingTableNameMap.getOrDefault(schemaTableKey, logTableName);
+            }
+        }
+        if (StringUtil.isNotBlank(logTableName) && resolveFields(logTableName) != null && matchConfiguredSchema(logSchema, event)) {
+            return mappingTableNameMap.getOrDefault(normalizeTableKey(logTableName), logTableName);
+        }
+        return parsedTableName;
+    }
+
+    private boolean matchConfiguredSchema(String owner, RedoEvent event) {
+        if (StringUtil.isBlank(schema)) {
+            return true;
+        }
+        if (StringUtil.isNotBlank(owner)) {
+            return schema.equalsIgnoreCase(owner);
+        }
+        if (StringUtil.isNotBlank(event.getObjectOwner())) {
+            return schema.equalsIgnoreCase(event.getObjectOwner());
+        }
+        // LogMiner 行缺少 owner 时，仍允许按表名匹配已映射表
+        return true;
+    }
+
+    private String normalizeTableKey(String tableName) {
+        return tableName == null ? StringUtil.EMPTY : tableName.toUpperCase();
+    }
+
+    private String getTableName(net.sf.jsqlparser.schema.Table table) {
         return table == null ? StringUtil.EMPTY : StringUtil.replace(table.getName(), StringUtil.DOUBLE_QUOTATION, StringUtil.EMPTY);
+    }
+
+    private String getSchemaName(net.sf.jsqlparser.schema.Table table) {
+        if (table == null) {
+            return StringUtil.EMPTY;
+        }
+        String schemaName = table.getSchemaName();
+        if (StringUtil.isBlank(schemaName) && table.getDatabase() != null) {
+            schemaName = table.getDatabase().getDatabaseName();
+        }
+        return StringUtil.replace(schemaName, StringUtil.DOUBLE_QUOTATION, StringUtil.EMPTY);
     }
 }

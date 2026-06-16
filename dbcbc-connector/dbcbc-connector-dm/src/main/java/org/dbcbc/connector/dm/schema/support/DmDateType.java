@@ -1,6 +1,6 @@
 package org.dbcbc.connector.dm.schema.support;
 
-import org.dbcbc.common.util.DateFormatUtil;
+import org.dbcbc.connector.dm.schema.support.DmDateParseUtil;
 import org.dbcbc.sdk.model.Field;
 import org.dbcbc.sdk.schema.support.DateType;
 
@@ -47,11 +47,11 @@ public final class DmDateType extends DateType {
             return new Date(Timestamp.valueOf((LocalDateTime) val).getTime());
         }
         if (val instanceof String) {
-            Timestamp timestamp = DateFormatUtil.stringToTimestamp((String) val);
-            if (timestamp != null) {
-                return new Date(timestamp.getTime());
+            Date date = DmDateParseUtil.parseDate((String) val);
+            if (date != null) {
+                return date;
             }
-            return DateFormatUtil.stringToDate((String) val);
+            return throwUnsupportedException(val, field);
         }
         return throwUnsupportedException(val, field);
     }

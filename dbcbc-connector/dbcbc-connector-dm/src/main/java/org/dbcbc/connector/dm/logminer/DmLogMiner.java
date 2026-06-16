@@ -3,6 +3,7 @@
  */
 package org.dbcbc.connector.dm.logminer;
 
+import org.dbcbc.common.util.StringUtil;
 import org.dbcbc.connector.dm.DmException;
 import org.dbcbc.sdk.util.DatabaseUtil;
 
@@ -15,6 +16,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
@@ -34,6 +37,7 @@ public class DmLogMiner {
     private final String url;
     private final String schema;
     private final String driverClassName;
+    private final List<String> monitorTableNames;
     private volatile int queryTimeout = 300;
 
     // 动态 FetchSize 配置
@@ -61,7 +65,7 @@ public class DmLogMiner {
 
     private volatile boolean connected = false;
     private Connection connection;
-    private List<BigInteger> currentRedoLogSequences;
+    private DmLogMinerHelper.ArchiveSnapshot currentArchiveSnapshot;
     private final TransactionalBuffer transactionalBuffer = new TransactionalBuffer();
     // 已提交的位点
     private Long committedScn = 0L;
@@ -75,13 +79,16 @@ public class DmLogMiner {
      * LogMiner 会话是否已启动。用于避免 redo 切换时频繁 START/END 导致 alert.log 暴涨。
      */
     private volatile boolean logMinerSessionStarted = false;
+    private volatile long lastArchiveReloadMs = 0;
+    private static final long ARCHIVE_RELOAD_INTERVAL_MS = 3000;
 
-    public DmLogMiner(String username, String password, String url, String schema, String driverClassName) {
+    public DmLogMiner(String username, String password, String url, String schema, String driverClassName, List<String> monitorTableNames) {
         this.username = username;
         this.password = password;
         this.url = url;
         this.schema = schema;
         this.driverClassName = driverClassName;
+        this.monitorTableNames = monitorTableNames == null ? Collections.emptyList() : new ArrayList<>(monitorTableNames);
     }
 
     public void close() {
@@ -120,13 +127,16 @@ public class DmLogMiner {
     }
 
     private Connection createConnection() throws SQLException {
-        return DatabaseUtil.getConnection(driverClassName, url, username, password);
+        Connection conn = DatabaseUtil.getConnection(driverClassName, url, username, password);
+        DmLogMinerHelper.resetLogMinerSession(conn);
+        return conn;
     }
 
     private Connection validateConnection() throws SQLException {
         Connection conn = null;
         try {
             conn = DatabaseUtil.getConnection(driverClassName, url, username, password);
+            DmLogMinerHelper.resetLogMinerSession(conn);
             DmLogMinerHelper.setSessionParameter(conn);
             DmLogMinerHelper.checkPermissions(conn);
         } catch (Exception e) {
@@ -140,8 +150,9 @@ public class DmLogMiner {
         this.connection = validateConnection();
         // 判断是否第一次读取
         if (startScn == 0) {
-            startScn = DmLogMinerHelper.getCurrentScn(connection);
-            restartLogMiner(startScn);
+            long currentScn = DmLogMinerHelper.getCurrentScn(connection);
+            startScn = Math.max(0, currentScn - 1);
+            restartLogMiner(currentScn + 1);
         } else {
             restartLogMiner(DmLogMinerHelper.getCurrentScn(connection));
         }
@@ -180,27 +191,30 @@ public class DmLogMiner {
     private void restartLogMiner(long endScn) throws SQLException {
         DmLogMinerHelper.startLogMiner(connection, startScn, endScn);
         logMinerSessionStarted = true;
-        currentRedoLogSequences = DmLogMinerHelper.getCurrentArchiveSequences(connection, startScn, endScn);
+        currentArchiveSnapshot = DmLogMinerHelper.getArchiveSnapshot(connection);
     }
 
-    private boolean redoLogSwitchOccurred(long endScn) throws SQLException {
-        final List<BigInteger> newSequences = DmLogMinerHelper.getCurrentArchiveSequences(connection, startScn, endScn);
-        if (!newSequences.equals(currentRedoLogSequences)) {
-            currentRedoLogSequences = newSequences;
+    private boolean archiveChanged(long endScn) throws SQLException {
+        DmLogMinerHelper.ArchiveSnapshot snapshot = DmLogMinerHelper.getArchiveSnapshot(connection);
+        if (snapshot.changed(currentArchiveSnapshot)) {
+            currentArchiveSnapshot = snapshot;
             return true;
         }
         return false;
     }
 
     /**
-     * redo 切换时只 add 新日志文件，不重启 LogMiner 会话。
+     * 归档切换时重新装载日志并启动 LogMiner（达梦 addLogFiles 会先 END，必须再 START 才能查 V$LOGMNR_CONTENTS）。
      */
     private void addLogFilesIfNeeded(long endScn) throws SQLException {
         if (!logMinerSessionStarted) {
             restartLogMiner(endScn);
             return;
         }
-        DmLogMinerHelper.addLogFiles(connection, startScn, endScn);
+        DmLogMinerHelper.resetLogMinerSession(connection);
+        DmLogMinerHelper.addLogFiles(connection, startScn, endScn, false);
+        DmLogMinerHelper.startLogMinerSession(connection);
+        currentArchiveSnapshot = DmLogMinerHelper.getArchiveSnapshot(connection);
     }
 
     private void logMinerViewProcessor(ResultSet rs) throws SQLException {
@@ -212,14 +226,13 @@ public class DmLogMiner {
             String segOwner = rs.getString("SEG_OWNER");
             int operationCode = rs.getInt("OPERATION_CODE");
             Timestamp changeTime = rs.getTimestamp("TIMESTAMP");
-            String txId = rs.getString("XID");
+            String txId = buildTxId(rs);
             if (scn.longValue() > processedScn) {
                 processedScn = scn.longValue();
             }
             // Commit
             if (operationCode == DmLogMinerHelper.LOG_MINER_OC_COMMIT) {
-                // 将TransactionalBuffer中当前事务的DML 转移到消费者处理
-                transactionalBuffer.commit(txId, scn, committedScn);
+                updateCommittedScn(scn.longValue());
                 continue;
             }
 
@@ -246,28 +259,15 @@ public class DmLogMiner {
                 continue;
             }
 
-            // DML
+            // DML（达梦 COMMITTED_DATA_ONLY 下 redo 已是提交后数据，直接下发，避免 COMMIT/XID 不匹配丢事件）
             if (operationCode == DmLogMinerHelper.LOG_MINER_OC_INSERT || operationCode == DmLogMinerHelper.LOG_MINER_OC_DELETE || operationCode == DmLogMinerHelper.LOG_MINER_OC_UPDATE) {
-                // 内部维护 TransactionalBuffer，将每条DML注册到Buffer中
-                // 根据事务提交或者回滚情况决定如何处理
                 if (redoSql != null) {
-                    final RedoEvent event = new RedoEvent(scn.longValue(), operationCode, redoSql, segOwner, tableName, changeTime, txId);
-                    // Transactional Commit Callback
-                    TransactionalBuffer.CommitCallback commitCallback = (smallestScn, commitScn, counter)-> {
-                        if (smallestScn == null || scn.compareTo(smallestScn) < 0) {
-                            // 当前SCN 事务已经提交 并且 小于事务缓冲区中所有的开始SCN，所以可以更新offsetScn
-                            startScn = scn.longValue();
-                        }
-                        if (counter == 0) {
-                            updateCommittedScn(commitScn.longValue());
-                        }
-                        event.setScn(startScn < committedScn ? committedScn : startScn);
-                        listener.onEvent(event);
-                    };
-                    // 生成操作唯一标识：scn + 表名 + 操作类型 + SQL内容hash
-                    // 用于防止重复查询导致的重复处理（同一事务的不同DML可能有相同SCN，所以不能只用SCN判断）
-                    String operationId = scn + "_" + tableName + "_" + operationCode + "_" + redoSql;
-                    transactionalBuffer.registerCommitCallback(txId, scn, operationId, commitCallback);
+                    updateCommittedScn(scn.longValue());
+                    listener.onEvent(new RedoEvent(scn.longValue(), operationCode, redoSql, segOwner, tableName, changeTime, txId));
+                } else {
+                    logger.warn("DML without SQL_REDO ignored: owner={}, table={}, op={}, scn={}. "
+                                    + "Please set RLOG_APPEND_LOGIC=1/2 and RLOG_IGNORE_TABLE_SET=1 or enable ADD LOGIC LOG on table",
+                            segOwner, tableName, operationCode, scn);
                 }
             }
         }
@@ -412,7 +412,12 @@ public class DmLogMiner {
         // Continuation SQL flag. Possible values are:
         // 0 = indicates SQL_REDO and SQL_UNDO is contained within the same row
         // 1 = indicates that either SQL_REDO or SQL_UNDO is greater than 4000 bytes in size and is continued in the next row returned by the view
-        int csf = rs.getInt("CSF");
+        int csf = 0;
+        try {
+            csf = rs.getInt("CSF");
+        } catch (SQLException e) {
+            logger.debug("CSF unavailable in V$LOGMNR_CONTENTS, skip redo merge: {}", e.getMessage());
+        }
 
         while (csf == 1) {
             rs.next();
@@ -421,6 +426,32 @@ public class DmLogMiner {
         }
 
         return redoBuilder.toString();
+    }
+
+    /**
+     * 达梦 XID 列为 BINARY，不能直接用 getString；需用 XIDUSN/XIDSLT/XIDSQN 组装稳定事务号。
+     */
+    private String buildTxId(ResultSet rs) throws SQLException {
+        try {
+            long xidusn = rs.getLong("XIDUSN");
+            long xidslt = rs.getLong("XIDSLT");
+            long xidsqn = rs.getLong("XIDSQN");
+            if (!rs.wasNull()) {
+                return xidusn + "." + xidslt + "." + xidsqn;
+            }
+        } catch (SQLException e) {
+            logger.debug("XIDUSN/XIDSLT/XIDSQN unavailable, fallback to XID bytes: {}", e.getMessage());
+        }
+        byte[] xidBytes = rs.getBytes("XID");
+        if (xidBytes != null && xidBytes.length > 0) {
+            StringBuilder hex = new StringBuilder(xidBytes.length * 2);
+            for (byte b : xidBytes) {
+                hex.append(String.format("%02X", b));
+            }
+            return hex.toString();
+        }
+        String xid = rs.getString("XID");
+        return xid == null ? StringUtil.EMPTY : xid;
     }
 
     public void registerEventListener(EventListener listener) {
@@ -485,24 +516,23 @@ public class DmLogMiner {
             newStartScn = processedScn + 1;
         } else {
             // 没有读取到任何数据（processedScn == startScn）
-            // 【关键】不能直接跳到endScn！Oracle LogMiner的归档数据可能有延迟出现在V$LOGMNR_CONTENTS
-            // 平衡策略：
-            // - 如果距离很近（<10），可能是归档延迟，保守推进
-            // - 如果距离较远（>=10），可能是过滤条件导致的空窗口，适度推进
-            long distance = endScn - startScn;
-            if (distance < 10) {
-                // 距离太近，可能有归档延迟，只推进一小步
-                newStartScn = startScn + 1;
+            // 达梦仅支持归档挖掘：空窗口通常是归档尚未装入 LogMiner，不可快进 SCN
+            if (lastQueryRows == 0 && transactionalBuffer.isEmpty()) {
+                newStartScn = startScn;
             } else {
-                // 距离较远，适度推进到中间位置，平衡性能与安全性
-                newStartScn = startScn + Math.min(distance / 2, 100);
+                long distance = endScn - startScn;
+                if (distance < 10) {
+                    newStartScn = startScn + 1;
+                } else {
+                    newStartScn = startScn + Math.min(distance / 2, 100);
+                }
             }
         }
         return newStartScn;
     }
 
     private PreparedStatement createStatement() throws SQLException {
-        String minerViewQuery = DmLogMinerHelper.logMinerViewQuery(schema, username);
+        String minerViewQuery = DmLogMinerHelper.logMinerViewQuery(schema, username, monitorTableNames);
         PreparedStatement statement = connection.prepareStatement(minerViewQuery, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY, ResultSet.HOLD_CURSORS_OVER_COMMIT);
         statement.setFetchDirection(ResultSet.FETCH_FORWARD);
         statement.setQueryTimeout(queryTimeout);
@@ -532,12 +562,16 @@ public class DmLogMiner {
 
                     // 2. 确定查询范围（动态调整 SCN 跨度）
                     long currentScn = DmLogMinerHelper.getCurrentScn(connection);
-                    long endScn = Math.min(currentScn, startScn + currentScnRange);
+                    long endScn = Math.min(currentScn + 1, startScn + currentScnRange);
+                    if (endScn <= startScn) {
+                        endScn = startScn + 1;
+                    }
 
-                    // 3. 检查 Redo Log 切换
-                    if (redoLogSwitchOccurred(endScn)) {
-                        logger.info("Switch to new archived log");
+                    long now = System.currentTimeMillis();
+                    if (archiveChanged(endScn) && now - lastArchiveReloadMs >= ARCHIVE_RELOAD_INTERVAL_MS) {
+                        logger.info("DM archive updated {}, reload LogMiner session", currentArchiveSnapshot);
                         addLogFilesIfNeeded(endScn);
+                        lastArchiveReloadMs = now;
                     }
 
                     // 4. 动态调整堆积偏移SCN
@@ -584,14 +618,6 @@ public class DmLogMiner {
                     long newStartScn = getNewStartScn(smallestUncommittedScn, endScn);
                     if (newStartScn != startScn) {
                         startScn = newStartScn;
-                    }
-
-                    // 当出现堆积时，快速推荐SCN，拿到下一个有效的SCN
-                    if (currentScn - startScn > backlog * 100 || currentScn - startScn > currentScnRange * 2) {
-                        newStartScn = findNextValidScn(startScn, connection);
-                        if (newStartScn != startScn) {
-                            startScn = newStartScn;
-                        }
                     }
 
                     // 8. 性能统计和动态调整

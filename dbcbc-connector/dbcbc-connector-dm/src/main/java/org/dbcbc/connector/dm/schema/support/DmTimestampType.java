@@ -1,5 +1,7 @@
 package org.dbcbc.connector.dm.schema.support;
 
+import org.dbcbc.common.util.DateFormatUtil;
+import org.dbcbc.connector.dm.schema.support.DmDateParseUtil;
 import org.dbcbc.sdk.model.Field;
 import org.dbcbc.sdk.schema.support.TimestampType;
 
@@ -32,6 +34,23 @@ public final class DmTimestampType extends TimestampType {
 
     @Override
     protected Timestamp merge(Object val, Field field) {
+        if (val instanceof Timestamp) {
+            return (Timestamp) val;
+        }
+        if (val instanceof java.util.Date) {
+            return new Timestamp(((java.util.Date) val).getTime());
+        }
+        if (val instanceof String) {
+            Timestamp timestamp = DmDateParseUtil.parseTimestamp((String) val);
+            if (timestamp != null) {
+                return timestamp;
+            }
+            try {
+                return DateFormatUtil.stringToTimestamp((String) val);
+            } catch (RuntimeException e) {
+                return throwUnsupportedException(val, field);
+            }
+        }
         return throwUnsupportedException(val, field);
     }
 }
