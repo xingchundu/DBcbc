@@ -14,9 +14,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * 达梦 LogMiner UPDATE redo 常只包含变更列，按主键回源库补全未出现在 redo 中的字段。
@@ -33,17 +33,14 @@ final class DmRowEnricher {
         if (instance == null || database == null || CollectionUtils.isEmpty(fields) || CollectionUtils.isEmpty(row) || !containsNull(row)) {
             return;
         }
-        List<Field> pkFields = PrimaryKeyUtil.findPrimaryKeyFields(fields);
-        if (CollectionUtils.isEmpty(pkFields)) {
+        List<Field> lookupFields = resolveLookupFields(fields, row);
+        if (CollectionUtils.isEmpty(lookupFields)) {
+            logger.debug("Skip enrich, no lookup key available: {} pk={}", qualifyTable(database, schema, tableName), row);
             return;
         }
-        List<Object> pkArgs = new ArrayList<>(pkFields.size());
-        for (Field pkField : pkFields) {
-            Object pkValue = getValue(fields, row, pkField.getName());
-            if (pkValue == null) {
-                return;
-            }
-            pkArgs.add(pkValue);
+        List<Object> lookupArgs = new ArrayList<>(lookupFields.size());
+        for (Field lookupField : lookupFields) {
+            lookupArgs.add(getValue(fields, row, lookupField.getName()));
         }
 
         StringBuilder sql = new StringBuilder("SELECT ");
@@ -54,12 +51,12 @@ final class DmRowEnricher {
             sql.append(database.buildWithQuotation(fields.get(i).getName()));
         }
         sql.append(" FROM ").append(qualifyTable(database, schema, tableName)).append(" WHERE ");
-        database.appendPrimaryKeys(sql, pkFields.stream().map(Field::getName).collect(Collectors.toList()));
+        appendLookupCondition(database, sql, lookupFields);
 
         try {
-            Map<String, Object> dbRow = instance.execute(template -> template.queryForMap(sql.toString(), pkArgs.toArray()));
+            Map<String, Object> dbRow = instance.execute(template -> template.queryForMap(sql.toString(), lookupArgs.toArray()));
             if (CollectionUtils.isEmpty(dbRow)) {
-                logger.warn("Cannot enrich DM row, source row not found: {} pk={}", qualifyTable(database, schema, tableName), pkArgs);
+                logger.warn("Cannot enrich DM row, source row not found: {} lookup={}", qualifyTable(database, schema, tableName), lookupArgs);
                 return;
             }
             for (int i = 0; i < fields.size(); i++) {
@@ -72,7 +69,39 @@ final class DmRowEnricher {
                 }
             }
         } catch (Exception e) {
-            logger.warn("Enrich DM row failed: {} pk={}, {}", qualifyTable(database, schema, tableName), pkArgs, e.getMessage());
+            logger.warn("Enrich DM row failed: {} lookup={}, {}", qualifyTable(database, schema, tableName), lookupArgs, e.getMessage());
+        }
+    }
+
+    /**
+     * 达梦 redo 可能只带部分主键列，优先用已有主键值回源补全；无主键标记时退化为首个非空列。
+     */
+    private static List<Field> resolveLookupFields(List<Field> fields, List<Object> row) {
+        List<Field> pkFields = PrimaryKeyUtil.findPrimaryKeyFields(fields);
+        if (!CollectionUtils.isEmpty(pkFields)) {
+            List<Field> available = new ArrayList<>();
+            for (Field pkField : pkFields) {
+                Object pkValue = getValue(fields, row, pkField.getName());
+                if (pkValue != null) {
+                    available.add(pkField);
+                }
+            }
+            return available;
+        }
+        for (Field field : fields) {
+            if (getValue(fields, row, field.getName()) != null) {
+                return Collections.singletonList(field);
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    private static void appendLookupCondition(Database database, StringBuilder sql, List<Field> lookupFields) {
+        for (int i = 0; i < lookupFields.size(); i++) {
+            if (i > 0) {
+                sql.append(" AND ");
+            }
+            sql.append(database.buildWithQuotation(lookupFields.get(i).getName())).append("=?");
         }
     }
 

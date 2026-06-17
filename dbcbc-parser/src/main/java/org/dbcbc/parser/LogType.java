@@ -139,7 +139,8 @@ public interface LogType {
      */
     enum TableGroupLog implements LogType {
 
-        INSERT("40", "新增"), UPDATE("41", "修改"), DELETE("42", "删除"), INCREMENT_FAILED("43", "增量同步异常"), FULL_FAILED("44", "全量同步异常"), COPY("45", "复制");
+        INSERT("40", "新增"), UPDATE("41", "修改"), DELETE("42", "删除"), INCREMENT_FAILED("43", "增量同步异常"), FULL_FAILED("44", "全量同步异常"), COPY("45", "复制"),
+        INCREMENT_STATS("46", "增量同步统计"), FULL_STATS("47", "全量同步统计");
 
         private String type;
         private String message;

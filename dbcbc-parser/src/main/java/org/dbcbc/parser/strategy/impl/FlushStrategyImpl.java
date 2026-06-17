@@ -11,6 +11,7 @@ import org.dbcbc.parser.LogService;
 import org.dbcbc.parser.LogType;
 import org.dbcbc.parser.ProfileComponent;
 import org.dbcbc.parser.flush.BufferActuator;
+import org.dbcbc.parser.model.Mapping;
 import org.dbcbc.parser.model.Meta;
 import org.dbcbc.parser.model.StorageRequest;
 import org.dbcbc.parser.model.SystemConfig;
@@ -63,6 +64,7 @@ public final class FlushStrategyImpl implements FlushStrategy {
         if (!profileComponent.getSystemConfig().isEnableStorageWriteFull()) {
             // 不记录全量数据，只统计成功失败总数
             refreshTotal(metaId, result);
+            logSyncStats(metaId, result, event, true);
 
             if (!CollectionUtils.isEmpty(result.getFailData())) {
                 String errorDetail = result.getError().toString();
@@ -77,12 +79,12 @@ public final class FlushStrategyImpl implements FlushStrategy {
             return;
         }
 
-        flush(metaId, result, event);
+        flush(metaId, result, event, true);
     }
 
     @Override
     public void flushIncrementData(String metaId, Result result, String event) {
-        flush(metaId, result, event);
+        flush(metaId, result, event, false);
     }
 
     private void asyncWrite(String metaId, String tableGroupId, String targetTableGroupName, String event, boolean success, List<Map> data, String error) {
@@ -122,8 +124,9 @@ public final class FlushStrategyImpl implements FlushStrategy {
         }
     }
 
-    private void flush(String metaId, Result result, String event) {
+    private void flush(String metaId, Result result, String event, boolean fullSync) {
         refreshTotal(metaId, result);
+        logSyncStats(metaId, result, event, fullSync);
 
         SystemConfig systemConfig = profileComponent.getSystemConfig();
         // 是否写失败数据
@@ -135,6 +138,28 @@ public final class FlushStrategyImpl implements FlushStrategy {
         // 是否写成功数据
         if (systemConfig.isEnableStorageWriteSuccess() && !CollectionUtils.isEmpty(result.getSuccessData())) {
             asyncWrite(metaId, result.getTableGroupId(), result.getTargetTableGroupName(), event, true, result.getSuccessData(), "");
+        }
+    }
+
+    private void logSyncStats(String metaId, Result result, String event, boolean fullSync) {
+        try {
+            int successCount = CollectionUtils.isEmpty(result.getSuccessData()) ? 0 : result.getSuccessData().size();
+            int failCount = CollectionUtils.isEmpty(result.getFailData()) ? 0 : result.getFailData().size();
+            if (successCount == 0 && failCount == 0) {
+                return;
+            }
+            Meta meta = cacheService.get(metaId, Meta.class);
+            if (meta == null) {
+                return;
+            }
+            Mapping mapping = profileComponent.getMapping(meta.getMappingId());
+            String mappingName = mapping != null ? mapping.getName() : meta.getMappingId();
+            String mappingId = mapping != null ? mapping.getId() : meta.getMappingId();
+            String tableName = StringUtil.isNotBlank(result.getTargetTableGroupName()) ? result.getTargetTableGroupName() : "-";
+            LogType logType = fullSync ? LogType.TableGroupLog.FULL_STATS : LogType.TableGroupLog.INCREMENT_STATS;
+            logService.log(logType, "[%s][id=%s] 表%s %s 成功%d 失败%d", mappingName, mappingId, tableName, event, successCount, failCount);
+        } catch (Exception e) {
+            logger.warn("记录同步统计日志失败: {}", e.getMessage());
         }
     }
 

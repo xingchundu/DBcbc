@@ -25,10 +25,10 @@
             </div>
             <div class="lg:col-span-1"></div>
             <div class="lg:col-span-2 flex items-center justify-end">
-                <button class="btn btn-success" id="batchStartBtn" disabled="disabled" onclick="batchStartMappings()" style="margin-right:5px;">
+                <button type="button" class="btn btn-success" id="batchStartBtn" disabled="disabled" style="margin-right:5px;">
                     <i class="fa fa-play"></i> 批量启动
                 </button>
-                <button class="btn btn-warning" id="batchStopBtn" disabled="disabled" onclick="batchStopMappings()" style="margin-right:5px;">
+                <button type="button" class="btn btn-warning" id="batchStopBtn" disabled="disabled" style="margin-right:5px;">
                     <i class="fa fa-pause"></i> 批量停止
                 </button>
                 <button class="btn btn-primary" id="addMappingBtn" onclick="doLoader('/mapping/pageAdd')">
@@ -41,7 +41,7 @@
             <thead>
             <tr>
                 <th></th>
-                <th><input type="checkbox" id="mappingCheckboxAll" onclick="toggleAllMappings(this)" /></th>
+                <th><input type="checkbox" id="mappingCheckboxAll" /></th>
                 <th>名称</th>
                 <th>同步方案</th>
                 <th>类型</th>
@@ -65,26 +65,275 @@ function syncErrorTypeLabel(type, json) {
     if (type === '44') {
         return '全量同步';
     }
+    if (type === '46') {
+        return '增量统计';
+    }
+    if (type === '47') {
+        return '全量统计';
+    }
     if (json && json.indexOf('启动驱动失败') >= 0) {
         return '启动失败';
     }
     return '同步异常';
 }
 
-function renderMappingSyncResult(mapping) {
-    let html = renderSyncResult(mapping);
-    const fail = mapping.meta && mapping.meta.fail ? mapping.meta.fail : 0;
-    const detailLabel = fail > 0 ? '错误详情' : '同步日志';
-    const safeName = escapeHtml(mapping.name || '');
-    html += '<br /><span class="text-error hover-underline cursor-pointer text-sm" title="查看同步/启动错误详情" '
-        + 'data-mapping-name="' + safeName + '" '
-        + 'onclick="showMappingSyncErrorDetail(\'' + mapping.id + '\', this.getAttribute(\'data-mapping-name\'))">'
-        + detailLabel + '</span>';
+function isSyncStatsLog(type) {
+    return type === '46' || type === '47';
+}
+
+function parseSyncStatsLine(json) {
+    if (!json) {
+        return null;
+    }
+    const m = String(json).match(/表(\S+)\s+(INSERT|UPDATE|DELETE|ALTER)\s+成功(\d+)\s+失败(\d+)/);
+    if (!m) {
+        return null;
+    }
+    return {
+        table: m[1],
+        event: m[2],
+        success: parseInt(m[3], 10) || 0,
+        fail: parseInt(m[4], 10) || 0
+    };
+}
+
+function formatSyncStatsSummary(json) {
+    const parsed = parseSyncStatsLine(json);
+    if (!parsed) {
+        return json || '';
+    }
+    let text = '表 ' + parsed.table + ' ' + parsed.event + ' ' + parsed.success + ' 条';
+    if (parsed.fail > 0) {
+        text += '，失败 ' + parsed.fail + ' 条';
+    }
+    return text;
+}
+
+function aggregateSyncStats(rows) {
+    const map = {};
+    (rows || []).forEach(function (row) {
+        if (!isSyncStatsLog(row.type)) {
+            return;
+        }
+        const parsed = parseSyncStatsLine(row.json);
+        if (!parsed) {
+            return;
+        }
+        if (!map[parsed.table]) {
+            map[parsed.table] = {};
+        }
+        if (!map[parsed.table][parsed.event]) {
+            map[parsed.table][parsed.event] = {success: 0, fail: 0};
+        }
+        map[parsed.table][parsed.event].success += parsed.success;
+        map[parsed.table][parsed.event].fail += parsed.fail;
+    });
+    return map;
+}
+
+function renderSyncStatsSummaryHtml(statsMap) {
+    const tables = Object.keys(statsMap || {}).sort();
+    if (tables.length === 0) {
+        return '';
+    }
+    let html = '<div class="mb-3 p-3 rounded border border-gray-200 bg-gray-50">'
+        + '<div class="font-medium mb-2 text-gray-700">同步统计汇总</div>'
+        + '<table class="table table-sm mb-0"><thead><tr>'
+        + '<th>表</th><th>INSERT</th><th>UPDATE</th><th>DELETE</th><th>其他</th>'
+        + '</tr></thead><tbody>';
+    tables.forEach(function (table) {
+        const events = statsMap[table];
+        function cell(eventName) {
+            const item = events[eventName];
+            if (!item || (item.success === 0 && item.fail === 0)) {
+                return '<span class="text-gray-400">-</span>';
+            }
+            let text = item.success + ' 条';
+            if (item.fail > 0) {
+                text += ' <span class="text-error">(失败' + item.fail + ')</span>';
+            }
+            return text;
+        }
+        html += '<tr><td>' + escapeHtml(table) + '</td>'
+            + '<td>' + cell('INSERT') + '</td>'
+            + '<td>' + cell('UPDATE') + '</td>'
+            + '<td>' + cell('DELETE') + '</td>'
+            + '<td>' + cell('ALTER') + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
     return html;
 }
 
+function renderSyncLogDetailCell(row) {
+    const fullText = row.json || '';
+    if (isSyncStatsLog(row.type)) {
+        const parsed = parseSyncStatsLine(fullText);
+        const summary = formatSyncStatsSummary(fullText);
+        const cls = parsed && parsed.fail > 0 ? 'text-warning' : 'text-success';
+        return '<div class="' + cls + ' font-medium" style="word-break:break-word;line-height:1.5;" title="' + escapeHtml(summary) + '">'
+            + escapeHtml(summary) + '</div>';
+    }
+    return renderSyncErrorDetailCell(row);
+}
+
+/** 从同步/启动日志 json 中提取主要错误信息 */
+function extractSyncErrorSummary(json) {
+    if (!json) {
+        return '';
+    }
+    let text = String(json).trim();
+
+    const startIdx = text.indexOf('启动驱动失败');
+    if (startIdx >= 0) {
+        const commaIdx = text.indexOf(', ', startIdx);
+        if (commaIdx >= 0 && commaIdx + 2 < text.length) {
+            return text.substring(commaIdx + 2).trim();
+        }
+    }
+
+    const errorIdx = text.indexOf('ERROR:');
+    if (errorIdx >= 0) {
+        let err = text.substring(errorIdx + 6).trim();
+        const nested = err.indexOf('; nested exception');
+        if (nested >= 0) {
+            err = err.substring(0, nested);
+        }
+        const detail = err.indexOf('  详细：');
+        if (detail >= 0) {
+            err = err.substring(0, detail);
+        }
+        const callNext = err.indexOf(' Call getNextException');
+        if (callNext >= 0) {
+            err = err.substring(0, callNext);
+        }
+        return err.trim();
+    }
+
+    const execFail = text.match(/执行(?:INSERT|UPDATE|DELETE|UPSERT)失败[:：]\s*(.+)$/);
+    if (execFail && execFail[1]) {
+        return extractSyncErrorSummary(execFail[1]);
+    }
+
+    const colonParts = text.split(':');
+    if (colonParts.length >= 3) {
+        let msg = colonParts.slice(2).join(':').trim();
+        if (msg.indexOf('PreparedStatementCallback') >= 0 || msg.indexOf('ERROR:') >= 0) {
+            return extractSyncErrorSummary(msg);
+        }
+        if (msg.length > 0) {
+            return msg;
+        }
+    }
+
+    return text;
+}
+
+function renderSyncErrorDetailCell(row) {
+    const fullText = row.json || '';
+    const summary = extractSyncErrorSummary(fullText);
+    const showFull = fullText && summary !== fullText;
+    let html = '<div class="text-error font-medium" style="word-break:break-word;line-height:1.5;" title="' + escapeHtml(summary) + '">'
+        + escapeHtml(summary || '（无错误摘要）') + '</div>';
+    if (showFull) {
+        html += '<details class="mt-2 text-xs text-gray-500"><summary class="cursor-pointer hover-underline">完整日志</summary>'
+            + '<pre class="mt-1 mb-0 whitespace-pre-wrap" style="word-break:break-all;max-height:160px;overflow:auto;">'
+            + escapeHtml(fullText) + '</pre></details>';
+    }
+    return html;
+}
+
+function renderMappingSyncResult(mapping) {
+    let html = renderSyncResult(mapping);
+    const fail = mapping.meta && mapping.meta.fail ? mapping.meta.fail : 0;
+    const detailLabel = '同步信息日志';
+    const safeName = escapeHtml(mapping.name || '');
+    html += '<br /><span class="text-primary hover-underline cursor-pointer text-sm" title="查看同步统计与错误详情" '
+        + 'data-mapping-name="' + safeName + '" '
+        + 'onclick="showMappingSyncErrorDetail(\'' + mapping.id + '\', this.getAttribute(\'data-mapping-name\'))">'
+        + detailLabel + '</span>';
+    html += '<br /><span data-sync-stats-preview="' + mapping.id + '" class="text-xs text-gray-400"></span>';
+    if (fail > 0) {
+        html += '<br /><span data-sync-error-preview="' + mapping.id + '" class="text-xs text-gray-400">正在加载错误摘要...</span>';
+    }
+    return html;
+}
+
+function loadMappingSyncErrorPreview(mappingId) {
+    doPoster('/mapping/querySyncErrors', {id: mappingId, pageNum: 1, pageSize: 20}, function (response) {
+        if (!response.success) {
+            return;
+        }
+        const rows = (response.data || {}).data || [];
+        const cell = document.querySelector('[data-sync-error-preview="' + mappingId + '"]');
+        if (!cell) {
+            return;
+        }
+        const errorRow = rows.find(function (row) {
+            return row.type === '43' || row.type === '44'
+                || (row.json && row.json.indexOf('启动驱动失败') >= 0);
+        });
+        if (!errorRow) {
+            cell.textContent = '';
+            cell.className = '';
+            return;
+        }
+        const summary = extractSyncErrorSummary(errorRow.json);
+        if (!summary) {
+            cell.textContent = '';
+            cell.className = '';
+            return;
+        }
+        const shortText = summary.length > 120 ? summary.substring(0, 120) + '…' : summary;
+        cell.className = 'text-xs text-error';
+        cell.style.wordBreak = 'break-word';
+        cell.style.lineHeight = '1.4';
+        cell.title = summary;
+        cell.textContent = shortText;
+    });
+}
+
+function loadMappingSyncStatsPreview(mappingId) {
+    doPoster('/mapping/querySyncErrors', {id: mappingId, pageNum: 1, pageSize: 200}, function (response) {
+        if (!response.success) {
+            return;
+        }
+        const rows = (response.data || {}).data || [];
+        const cell = document.querySelector('[data-sync-stats-preview="' + mappingId + '"]');
+        if (!cell) {
+            return;
+        }
+        const statsMap = aggregateSyncStats(rows);
+        const tables = Object.keys(statsMap).sort();
+        if (tables.length === 0) {
+            cell.textContent = '';
+            cell.className = '';
+            return;
+        }
+        const parts = [];
+        tables.forEach(function (table) {
+            const events = statsMap[table];
+            const eventParts = [];
+            ['INSERT', 'UPDATE', 'DELETE'].forEach(function (event) {
+                const item = events[event];
+                if (item && item.success > 0) {
+                    const prefix = event === 'INSERT' ? 'I' : (event === 'UPDATE' ? 'U' : 'D');
+                    eventParts.push(prefix + item.success);
+                }
+            });
+            if (eventParts.length > 0) {
+                parts.push(table + ': ' + eventParts.join(' '));
+            }
+        });
+        cell.className = 'text-xs text-success';
+        cell.style.wordBreak = 'break-word';
+        cell.style.lineHeight = '1.4';
+        cell.title = parts.join('；');
+        cell.textContent = parts.length > 2 ? parts.slice(0, 2).join('；') + '…' : parts.join('；');
+    });
+}
+
 function showMappingSyncErrorDetail(mappingId, mappingName) {
-    doPoster('/mapping/querySyncErrors', {id: mappingId, pageNum: 1, pageSize: 50}, function (response) {
+    doPoster('/mapping/querySyncErrors', {id: mappingId, pageNum: 1, pageSize: 500}, function (response) {
         if (!response.success) {
             bootGrowl(response.message || '加载同步日志失败', 'danger');
             return;
@@ -92,25 +341,31 @@ function showMappingSyncErrorDetail(mappingId, mappingName) {
         const paging = response.data || {};
         const rows = paging.data || [];
         let body = '<div class="text-sm text-gray-500 mb-3">驱动：<strong>' + escapeHtml(mappingName) + '</strong>，共 ' + (paging.total || 0) + ' 条</div>';
+        body += renderSyncStatsSummaryHtml(aggregateSyncStats(rows));
         if (rows.length === 0) {
-            body += '<p class="text-center text-gray-400 py-6">暂无同步/启动错误记录</p>';
+            body += '<p class="text-center text-gray-400 py-6">暂无同步记录</p>';
         } else {
-            body += '<div style="max-height:420px;overflow:auto;"><table class="table"><thead><tr><th></th><th>时间</th><th>类型</th><th>详情</th></tr></thead><tbody>';
+            body += '<div style="max-height:480px;overflow:auto;"><table class="table"><thead><tr>'
+                + '<th style="width:40px;"></th>'
+                + '<th style="width:100px;">时间</th>'
+                + '<th style="width:80px;">类型</th>'
+                + '<th>详情</th>'
+                + '</tr></thead><tbody>';
             rows.forEach(function (row, idx) {
                 body += '<tr>'
                     + '<td>' + (idx + 1) + '</td>'
-                    + '<td style="white-space:nowrap;">' + escapeHtml(formatRelativeTime(row.createTime) || '') + '</td>'
-                    + '<td>' + escapeHtml(syncErrorTypeLabel(row.type, row.json)) + '</td>'
-                    + '<td style="word-break:break-all;">' + escapeHtml(row.json || '') + '</td>'
+                    + '<td style="white-space:nowrap;vertical-align:top;">' + escapeHtml(formatRelativeTime(row.createTime) || '') + '</td>'
+                    + '<td style="vertical-align:top;">' + escapeHtml(syncErrorTypeLabel(row.type, row.json)) + '</td>'
+                    + '<td style="vertical-align:top;">' + renderSyncLogDetailCell(row) + '</td>'
                     + '</tr>';
             });
             body += '</tbody></table></div>';
         }
         showConfirm({
-            title: '同步错误详情',
-            icon: 'error',
+            title: '同步信息日志',
+            icon: 'info',
             size: 'max',
-            message: '以下为该驱动启动与同步过程中的错误记录（含每次启动重试）',
+            message: '绿色为各表 INSERT/UPDATE/DELETE 统计；红色为主要错误摘要',
             body: body,
             confirmText: '关闭',
             onConfirm: function () {}
@@ -166,6 +421,28 @@ function deleteMapping(id) {
     });
 }
 
+function getRestMessage(response, fallback) {
+    if (response && response.message) {
+        return response.message;
+    }
+    if (response && response.data != null && typeof response.data === 'string') {
+        return response.data;
+    }
+    return fallback || '';
+}
+
+function setBatchButtonDisabled(button, disabled) {
+    if (!button) {
+        return;
+    }
+    button.disabled = disabled;
+    if (disabled) {
+        button.setAttribute('disabled', 'disabled');
+    } else {
+        button.removeAttribute('disabled');
+    }
+}
+
 function toggleAllMappings(checkbox) {
     const isChecked = checkbox.checked;
     document.querySelectorAll('.mappingCheckbox').forEach(function(cb) {
@@ -174,11 +451,22 @@ function toggleAllMappings(checkbox) {
     updateBatchButtons();
 }
 
+function syncMappingCheckboxAllState() {
+    const all = document.querySelectorAll('.mappingCheckbox');
+    const checked = document.querySelectorAll('.mappingCheckbox:checked');
+    const allCb = document.getElementById('mappingCheckboxAll');
+    if (!allCb || all.length === 0) {
+        return;
+    }
+    allCb.checked = all.length === checked.length;
+    allCb.indeterminate = checked.length > 0 && checked.length < all.length;
+}
+
 function updateBatchButtons() {
     const checked = document.querySelectorAll('.mappingCheckbox:checked');
     const hasChecked = checked.length > 0;
-    document.getElementById('batchStartBtn').disabled = !hasChecked;
-    document.getElementById('batchStopBtn').disabled = !hasChecked;
+    setBatchButtonDisabled(document.getElementById('batchStartBtn'), !hasChecked);
+    setBatchButtonDisabled(document.getElementById('batchStopBtn'), !hasChecked);
 }
 
 function getSelectedMappingIds() {
@@ -189,14 +477,42 @@ function getSelectedMappingIds() {
     return ids;
 }
 
+function initMappingBatchActions() {
+    $(document)
+        .off('click.mappingBatchStart', '#batchStartBtn')
+        .on('click.mappingBatchStart', '#batchStartBtn', function (e) {
+            e.preventDefault();
+            batchStartMappings();
+        })
+        .off('click.mappingBatchStop', '#batchStopBtn')
+        .on('click.mappingBatchStop', '#batchStopBtn', function (e) {
+            e.preventDefault();
+            batchStopMappings();
+        })
+        .off('change.mappingBatchAll', '#mappingCheckboxAll')
+        .on('change.mappingBatchAll', '#mappingCheckboxAll', function () {
+            toggleAllMappings(this);
+        })
+        .off('change.mappingBatchItem', '.mappingCheckbox')
+        .on('change.mappingBatchItem', '.mappingCheckbox', function () {
+            updateBatchButtons();
+            syncMappingCheckboxAllState();
+        });
+}
+
 function batchStartMappings() {
     const ids = getSelectedMappingIds();
-    if (ids.length === 0) return;
-    doPoster("/mapping/batchStart", {ids: ids.join(',')}, function(response) {
+    if (ids.length === 0) {
+        bootGrowl('请先勾选要启动的驱动', 'warning');
+        return;
+    }
+    setBatchButtonDisabled(document.getElementById('batchStartBtn'), true);
+    setBatchButtonDisabled(document.getElementById('batchStopBtn'), true);
+    doPoster('/mapping/batchStart', {ids: ids.join(',')}, function(response) {
         if (response.success) {
-            bootGrowl(response.message, 'success');
+            bootGrowl(getRestMessage(response, '批量启动完成'), 'success');
         } else {
-            bootGrowl(response.message, 'danger');
+            bootGrowl(getRestMessage(response, '批量启动失败'), 'danger');
         }
         backIndexPage();
     });
@@ -204,12 +520,17 @@ function batchStartMappings() {
 
 function batchStopMappings() {
     const ids = getSelectedMappingIds();
-    if (ids.length === 0) return;
-    doPoster("/mapping/batchStop", {ids: ids.join(',')}, function(response) {
+    if (ids.length === 0) {
+        bootGrowl('请先勾选要停止的驱动', 'warning');
+        return;
+    }
+    setBatchButtonDisabled(document.getElementById('batchStartBtn'), true);
+    setBatchButtonDisabled(document.getElementById('batchStopBtn'), true);
+    doPoster('/mapping/batchStop', {ids: ids.join(',')}, function(response) {
         if (response.success) {
-            bootGrowl(response.message, 'success');
+            bootGrowl(getRestMessage(response, '批量停止完成'), 'success');
         } else {
-            bootGrowl(response.message, 'danger');
+            bootGrowl(getRestMessage(response, '批量停止失败'), 'danger');
         }
         backIndexPage();
     });
@@ -218,6 +539,8 @@ function batchStopMappings() {
 
 // 页面初始化
 $(document).ready(function() {
+    initMappingBatchActions();
+
     // 定义返回函数，子页面返回
     window.backIndexPage = function () {
         doLoader('/mapping/list');
@@ -231,7 +554,7 @@ $(document).ready(function() {
             return `
                 <tr>
                     <td>${index}</td>
-                    <td><input type="checkbox" class="mappingCheckbox" value="${mapping.id}" onclick="updateBatchButtons()" /></td>
+                    <td><input type="checkbox" class="mappingCheckbox" value="${mapping.id}" /></td>
                     <td title="${escapeHtml(mapping.name)}">
                         <span>${escapeHtml(mapping.name)}</span>
                     </td>
@@ -264,7 +587,21 @@ $(document).ready(function() {
                 </tr>
             `;
         },
-        emptyHtml:'<td colspan="8" class="text-center"><i class="fa fa-exchange empty-icon"></i><p class="empty-text">暂无驱动</p><p class="empty-description">点击"添加"按钮创建第一个驱动</p></td>'
+        emptyHtml:'<td colspan="8" class="text-center"><i class="fa fa-exchange empty-icon"></i><p class="empty-text">暂无驱动</p><p class="empty-description">点击"添加"按钮创建第一个驱动</p></td>',
+        refreshCompleted: function () {
+            const allCb = document.getElementById('mappingCheckboxAll');
+            if (allCb) {
+                allCb.checked = false;
+                allCb.indeterminate = false;
+            }
+            updateBatchButtons();
+            document.querySelectorAll('[data-sync-stats-preview]').forEach(function (el) {
+                loadMappingSyncStatsPreview(el.getAttribute('data-sync-stats-preview'));
+            });
+            document.querySelectorAll('[data-sync-error-preview]').forEach(function (el) {
+                loadMappingSyncErrorPreview(el.getAttribute('data-sync-error-preview'));
+            });
+        }
     });
 
     function getSearchParams() {

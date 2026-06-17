@@ -71,6 +71,8 @@ public class DmLogMiner {
     private Long committedScn = 0L;
     // 初始位点
     private long startScn = 0;
+    /** 驱动快照/断点位点，防止 committedScn 未初始化时被错误回退到 1 */
+    private long snapshotStartScn = 0;
     // 本轮查询处理的最大SCN，用于避免重复查询
     private long processedScn = 0;
     private EventListener listener;
@@ -80,7 +82,13 @@ public class DmLogMiner {
      */
     private volatile boolean logMinerSessionStarted = false;
     private volatile long lastArchiveReloadMs = 0;
+    private volatile long lastBacklogReloadMs = 0;
+    private volatile int consecutiveEmptyQueriesForSkip = 0;
     private static final long ARCHIVE_RELOAD_INTERVAL_MS = 3000;
+    private static final long REALTIME_RELOAD_INTERVAL_MS = 1000;
+    private static final long BACKLOG_RELOAD_INTERVAL_MS = 30000;
+    /** processedScn 误推进超过 committedScn 的小幅超前，超过此值视为空窗快进 */
+    private static final long SCN_OVERSHOOT_CORRECT_THRESHOLD = 101;
 
     public DmLogMiner(String username, String password, String url, String schema, String driverClassName, List<String> monitorTableNames) {
         this.username = username;
@@ -156,7 +164,15 @@ public class DmLogMiner {
         } else {
             restartLogMiner(DmLogMinerHelper.getCurrentScn(connection));
         }
-        logger.info("Start DM log miner, scn={}", startScn);
+        if (startScn > 0) {
+            if (snapshotStartScn == 0) {
+                snapshotStartScn = startScn;
+            }
+            if (committedScn == 0L) {
+                committedScn = Math.max(0, startScn - 1);
+            }
+        }
+        logger.info("Start DM log miner, scn={}, snapshotScn={}, committedScn={}", startScn, snapshotStartScn, committedScn);
         worker = new Worker();
         worker.setName("dm-log-miner-parser-" + url + "_" + worker.hashCode());
         worker.setDaemon(false);
@@ -194,9 +210,36 @@ public class DmLogMiner {
         currentArchiveSnapshot = DmLogMinerHelper.getArchiveSnapshot(connection);
     }
 
-    private boolean archiveChanged(long endScn) throws SQLException {
+    /**
+     * 是否已追上数据库当前位点（仅此时才按 NEXT_CHANGE# 做实时归档重载）。
+     */
+    private boolean isCaughtUpAtTip(long currentScn) {
+        long readPosition = Math.max(startScn, committedScn);
+        return currentScn - readPosition <= currentScnRange;
+    }
+
+    /**
+     * 达梦归档 CDC：同一归档文件持续增长时 SEQUENCE# 不变，需在追上位点后根据 NEXT_CHANGE# 重载。
+     */
+    private boolean shouldReloadArchive(long currentScn, long now) throws SQLException {
         DmLogMinerHelper.ArchiveSnapshot snapshot = DmLogMinerHelper.getArchiveSnapshot(connection);
         if (snapshot.changed(currentArchiveSnapshot)) {
+            if (now - lastArchiveReloadMs >= ARCHIVE_RELOAD_INTERVAL_MS) {
+                currentArchiveSnapshot = snapshot;
+                return true;
+            }
+            return false;
+        }
+        if (!isCaughtUpAtTip(currentScn)) {
+            return false;
+        }
+        if (snapshot.nextChangeGrew(currentArchiveSnapshot)
+                && now - lastArchiveReloadMs >= REALTIME_RELOAD_INTERVAL_MS) {
+            currentArchiveSnapshot = snapshot;
+            return true;
+        }
+        if (lastQueryRows == 0 && currentScn > startScn && startScn >= committedScn
+                && now - lastArchiveReloadMs >= REALTIME_RELOAD_INTERVAL_MS) {
             currentArchiveSnapshot = snapshot;
             return true;
         }
@@ -343,7 +386,11 @@ public class DmLogMiner {
      * 动态调整休眠时间
      * 根据数据量灵活调整轮询间隔，平衡延迟和CPU占用
      */
-    private void adjustSleepTime() {
+    private void adjustSleepTime(long currentScn) {
+        if (lastQueryRows == 0 && isCaughtUpAtTip(currentScn) && currentScn > startScn) {
+            currentSleepMillis = minSleepMillis;
+            return;
+        }
         if (lastQueryRows == 0) {
             // 无数据，逐步增加休眠时间
             int newSleep = Math.min(maxSleepMillis, currentSleepMillis + 200);
@@ -464,6 +511,9 @@ public class DmLogMiner {
 
     public void setStartScn(long startScn) {
         this.startScn = startScn;
+        if (startScn > 0) {
+            this.snapshotStartScn = startScn;
+        }
     }
 
     public interface EventListener {
@@ -528,6 +578,9 @@ public class DmLogMiner {
                 }
             }
         }
+        if (committedScn >= startScn && newStartScn > committedScn + 1) {
+            newStartScn = Math.max(startScn, committedScn + 1);
+        }
         return newStartScn;
     }
 
@@ -562,16 +615,40 @@ public class DmLogMiner {
 
                     // 2. 确定查询范围（动态调整 SCN 跨度）
                     long currentScn = DmLogMinerHelper.getCurrentScn(connection);
+                    if (snapshotStartScn > 0 && startScn < snapshotStartScn) {
+                        logger.warn("Restore startScn from {} to snapshot position {}", startScn, snapshotStartScn);
+                        startScn = snapshotStartScn;
+                    }
+                    if (committedScn > 0 && startScn > committedScn + 1
+                            && (startScn - committedScn) <= SCN_OVERSHOOT_CORRECT_THRESHOLD) {
+                        long corrected = committedScn + 1;
+                        if (snapshotStartScn > 0 && corrected < snapshotStartScn) {
+                            corrected = snapshotStartScn;
+                        }
+                        logger.warn("Correct startScn from {} back to {} (committedScn={})", startScn, corrected, committedScn);
+                        startScn = corrected;
+                    }
                     long endScn = Math.min(currentScn + 1, startScn + currentScnRange);
                     if (endScn <= startScn) {
                         endScn = startScn + 1;
                     }
 
                     long now = System.currentTimeMillis();
-                    if (archiveChanged(endScn) && now - lastArchiveReloadMs >= ARCHIVE_RELOAD_INTERVAL_MS) {
-                        logger.info("DM archive updated {}, reload LogMiner session", currentArchiveSnapshot);
+                    if (shouldReloadArchive(currentScn, now)) {
+                        logger.info("DM archive reload for realtime CDC, snapshot={}, startScn={}, currentScn={}, committedScn={}",
+                                currentArchiveSnapshot, startScn, currentScn, committedScn);
                         addLogFilesIfNeeded(endScn);
                         lastArchiveReloadMs = now;
+                    } else if (!isCaughtUpAtTip(currentScn) && lastQueryRows == 0
+                            && consecutiveEmptyQueriesForSkip >= 15
+                            && now - lastBacklogReloadMs >= BACKLOG_RELOAD_INTERVAL_MS) {
+                        long reloadEnd = Math.min(currentScn + 1, startScn + MAX_SCN_RANGE);
+                        logger.info("Backlog catch-up reload archives [{}, {}), backlog={}", startScn, reloadEnd, currentScn - startScn);
+                        restartLogMiner(reloadEnd);
+                        lastBacklogReloadMs = now;
+                        lastArchiveReloadMs = now;
+                        consecutiveEmptyQueriesForSkip = 0;
+                        continue;
                     }
 
                     // 4. 动态调整堆积偏移SCN
@@ -613,6 +690,37 @@ public class DmLogMiner {
 
                     long queryDuration = System.currentTimeMillis() - queryStartTime;
 
+                    if (lastQueryRows == 0) {
+                        consecutiveEmptyQueriesForSkip++;
+                    } else {
+                        consecutiveEmptyQueriesForSkip = 0;
+                    }
+                    if (lastQueryRows == 0 && consecutiveEmptyQueriesForSkip >= 5 && startScn < currentScn) {
+                        Long nextValid = findNextValidScn(startScn, connection);
+                        long advanceTo = startScn;
+                        if (nextValid != null && nextValid > startScn) {
+                            advanceTo = Math.min(nextValid, startScn + currentScnRange);
+                        } else {
+                            advanceTo = Math.min(startScn + currentScnRange, currentScn);
+                        }
+                        if (snapshotStartScn > 0 && advanceTo < snapshotStartScn) {
+                            advanceTo = snapshotStartScn;
+                        }
+                        if (advanceTo > startScn && advanceTo <= currentScn) {
+                            logger.info("Skip empty SCN window, advance startScn {} -> {}", startScn, advanceTo);
+                            startScn = advanceTo;
+                            committedScn = Math.max(committedScn, advanceTo - 1);
+                            consecutiveEmptyQueriesForSkip = 0;
+                            try {
+                                long reloadEnd = Math.min(currentScn + 1, startScn + currentScnRange);
+                                addLogFilesIfNeeded(reloadEnd);
+                                lastArchiveReloadMs = System.currentTimeMillis();
+                            } catch (SQLException e) {
+                                logger.warn("Reload archives after SCN skip failed: {}", e.getMessage());
+                            }
+                        }
+                    }
+
                     // 7. 推进 SCN
                     Long smallestUncommittedScn = transactionalBuffer.getSmallestScn();
                     long newStartScn = getNewStartScn(smallestUncommittedScn, endScn);
@@ -624,7 +732,7 @@ public class DmLogMiner {
                     collectStatistics(currentScn, queryDuration);
                     adjustFetchSize();
                     adjustScnRange(backlog, queryDuration);
-                    adjustSleepTime();
+                    adjustSleepTime(currentScn);
 
                     // 9. 动态休眠
                     try {

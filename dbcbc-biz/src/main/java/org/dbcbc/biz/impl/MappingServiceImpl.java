@@ -69,6 +69,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -127,7 +128,7 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
     @Resource
     private StorageService storageService;
 
-    private static final int SYNC_ERROR_LOG_SCAN_SIZE = 500;
+    private static final int SYNC_ERROR_LOG_SCAN_SIZE = 2000;
 
     @Override
     public String add(Map<String, String> params) {
@@ -380,11 +381,7 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
                 .filter(StringUtil::isNotBlank)
                 .collect(Collectors.toSet());
 
-        Query query = new Query(1, SYNC_ERROR_LOG_SCAN_SIZE);
-        query.setType(StorageEnum.LOG);
-        query.addFilter(ConfigConstant.CONFIG_MODEL_JSON, mapping.getName(), true);
-        Paging raw = storageService.query(query);
-        List<Map> rows = raw.getData() == null ? Collections.emptyList() : (List<Map>) raw.getData();
+        List<Map> rows = querySyncErrorLogRows();
 
         List<LogVO> matched = rows.stream()
                 .filter(row -> matchSyncErrorLog(row, mapping, sourceTables))
@@ -403,8 +400,35 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
         LogType logType = ModelEnum.INCREMENT.getCode().equals(mapping.getModel())
                 ? LogType.TableGroupLog.INCREMENT_FAILED : LogType.TableGroupLog.FULL_FAILED;
         String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-        logService.log(logType, "启动驱动失败：[%s], %s", mapping.getName(), message);
+        logService.log(logType, "启动驱动失败：[%s][id=%s], %s", mapping.getName(), mapping.getId(), message);
         logger.warn("启动驱动失败：{}, {}", mapping.getName(), message, e);
+    }
+
+    /**
+     * 按同步异常类型拉取日志后在内存中匹配驱动，避免 Lucene TermQuery 无法按 json 子串检索。
+     */
+    private List<Map> querySyncErrorLogRows() {
+        Map<String, Map> rowsById = new LinkedHashMap<>();
+        appendLogRows(rowsById, LogType.TableGroupLog.INCREMENT_FAILED.getType());
+        appendLogRows(rowsById, LogType.TableGroupLog.FULL_FAILED.getType());
+        appendLogRows(rowsById, LogType.TableGroupLog.INCREMENT_STATS.getType());
+        appendLogRows(rowsById, LogType.TableGroupLog.FULL_STATS.getType());
+        return new ArrayList<>(rowsById.values());
+    }
+
+    private void appendLogRows(Map<String, Map> rowsById, String logType) {
+        Query query = new Query(1, SYNC_ERROR_LOG_SCAN_SIZE);
+        query.setType(StorageEnum.LOG);
+        query.addFilter(ConfigConstant.CONFIG_MODEL_TYPE, logType);
+        Paging raw = storageService.query(query);
+        List<Map> rows = raw.getData() == null ? Collections.emptyList() : (List<Map>) raw.getData();
+        for (Map row : rows) {
+            if (row == null) {
+                continue;
+            }
+            String id = String.valueOf(row.get(ConfigConstant.CONFIG_MODEL_ID));
+            rowsById.putIfAbsent(id, row);
+        }
     }
 
     private boolean matchSyncErrorLog(Map row, Mapping mapping, Set<String> sourceTables) {
@@ -417,11 +441,17 @@ public class MappingServiceImpl extends BaseServiceImpl implements MappingServic
             return false;
         }
         boolean syncType = LogType.TableGroupLog.INCREMENT_FAILED.getType().equals(type)
-                || LogType.TableGroupLog.FULL_FAILED.getType().equals(type);
+                || LogType.TableGroupLog.FULL_FAILED.getType().equals(type)
+                || LogType.TableGroupLog.INCREMENT_STATS.getType().equals(type)
+                || LogType.TableGroupLog.FULL_STATS.getType().equals(type);
         if (!syncType && !json.contains("同步失败") && !json.contains("同步异常") && !json.contains("启动驱动失败")) {
             return false;
         }
         String name = mapping.getName();
+        String mappingId = mapping.getId();
+        if (StringUtil.isNotBlank(mappingId) && json.contains("[id=" + mappingId + "]")) {
+            return true;
+        }
         if (json.contains("[" + name + "]")) {
             return true;
         }

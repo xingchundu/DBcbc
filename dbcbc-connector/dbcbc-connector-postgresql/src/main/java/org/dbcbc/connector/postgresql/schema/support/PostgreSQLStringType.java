@@ -77,7 +77,8 @@ public final class PostgreSQLStringType extends StringType {
         }
         if (val instanceof PGobject) {
             PGobject pgObject = (PGobject) val;
-            return pgObject.getValue();
+            String text = pgObject.getValue();
+            return text != null ? text : "";
         }
         if (val instanceof Boolean) {
             return ((Boolean) val) ? "1" : "0";

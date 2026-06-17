@@ -185,7 +185,16 @@ public final class DmLogMinerHelper {
             if (other == null) {
                 return true;
             }
-            return maxSequence != other.maxSequence || maxNextChange != other.maxNextChange;
+            // 新归档文件出现
+            return maxSequence != other.maxSequence;
+        }
+
+        public boolean nextChangeGrew(ArchiveSnapshot other) {
+            return other != null && maxNextChange > other.maxNextChange;
+        }
+
+        public long getMaxNextChange() {
+            return maxNextChange;
         }
 
         @Override

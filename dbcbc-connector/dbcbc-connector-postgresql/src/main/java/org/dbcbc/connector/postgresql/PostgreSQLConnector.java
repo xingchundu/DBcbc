@@ -3,10 +3,13 @@
  */
 package org.dbcbc.connector.postgresql;
 
+import org.dbcbc.common.model.Result;
+import org.dbcbc.common.util.CollectionUtils;
 import org.dbcbc.common.util.StringUtil;
 import org.dbcbc.connector.postgresql.cdc.PostgreSQLListener;
 import org.dbcbc.connector.postgresql.schema.PostgreSQLSchemaResolver;
 import org.dbcbc.connector.postgresql.validator.PostgreSQLConfigValidator;
+import org.dbcbc.sdk.SdkException;
 import org.dbcbc.sdk.config.DatabaseConfig;
 import org.dbcbc.sdk.config.SqlBuilderConfig;
 import org.dbcbc.sdk.connector.ConfigValidator;
@@ -15,18 +18,30 @@ import org.dbcbc.sdk.connector.ConnectorServiceContext;
 import org.dbcbc.sdk.connector.database.AbstractDatabaseConnector;
 import org.dbcbc.sdk.connector.database.Database;
 import org.dbcbc.sdk.connector.database.DatabaseConnectorInstance;
+import org.dbcbc.sdk.constant.ConnectorConstant;
 import org.dbcbc.sdk.constant.DatabaseConstant;
 import org.dbcbc.sdk.enums.ListenerTypeEnum;
 import org.dbcbc.sdk.listener.DatabaseQuartzListener;
 import org.dbcbc.sdk.listener.Listener;
+import org.dbcbc.sdk.model.Field;
 import org.dbcbc.sdk.model.PageSql;
+import org.dbcbc.sdk.plugin.PluginContext;
 import org.dbcbc.sdk.plugin.ReaderContext;
+import org.dbcbc.sdk.schema.CustomData;
 import org.dbcbc.sdk.schema.SchemaResolver;
 import org.dbcbc.sdk.util.PrimaryKeyUtil;
+
+import org.postgresql.geometric.PGpoint;
+import org.postgresql.util.PGobject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * PostgreSQL连接器实现
@@ -36,6 +51,8 @@ import java.util.List;
  * @Date 2022-05-22 22:56
  */
 public final class PostgreSQLConnector extends AbstractDatabaseConnector {
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
 
     private final String QUERY_DATABASE = "SELECT datname FROM pg_database WHERE datistemplate = FALSE order by datname";
     private final String QUERY_SCHEMA = "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '#' and schema_name NOT LIKE 'pg_%' AND schema_name not in('information_schema') order by schema_name";
@@ -237,6 +254,206 @@ public final class PostgreSQLConnector extends AbstractDatabaseConnector {
         }
 
         return sql.toString();
+    }
+
+    /**
+     * 开启覆盖同步时，UPDATE 事件若仅包含变更列，UPSERT 的 INSERT 阶段会因 NOT NULL 约束失败。
+     * 对含空值的 UPDATE 行改为只更新非空列，避免把未变更列写成 NULL。
+     */
+    @Override
+    public Result writer(DatabaseConnectorInstance connectorInstance, PluginContext context) {
+        Result result;
+        if (context.isForceUpdate() && isUpdate(context.getEvent()) && containsPartialUpdateRow(context)) {
+            result = writePartialUpdate(connectorInstance, context);
+        } else {
+            result = super.writer(connectorInstance, context);
+        }
+        normalizeResultData(result);
+        return result;
+    }
+
+    /**
+     * 写入成功后持久化增量记录时，PGobject/PGpoint 等 JDBC 类型需转为可序列化值。
+     */
+    @SuppressWarnings("unchecked")
+    private void normalizeResultData(Result result) {
+        if (result == null) {
+            return;
+        }
+        for (Object item : result.getSuccessData()) {
+            if (item instanceof Map) {
+                normalizeRowForStorage((Map) item);
+            }
+        }
+        for (Object item : result.getFailData()) {
+            if (item instanceof Map) {
+                normalizeRowForStorage((Map) item);
+            }
+        }
+    }
+
+    private void normalizeRowForStorage(Map row) {
+        if (CollectionUtils.isEmpty(row)) {
+            return;
+        }
+        row.replaceAll((key, value) -> toStorableValue(value));
+    }
+
+    private Object toStorableValue(Object value) {
+        if (value instanceof PGobject) {
+            String text = ((PGobject) value).getValue();
+            return text != null ? text : StringUtil.EMPTY;
+        }
+        if (value instanceof PGpoint) {
+            PGpoint point = (PGpoint) value;
+            return String.format("(%s,%s)", point.x, point.y);
+        }
+        return value;
+    }
+
+    private boolean containsPartialUpdateRow(PluginContext context) {
+        List<Field> targetFields = context.getTargetFields();
+        if (CollectionUtils.isEmpty(targetFields) || CollectionUtils.isEmpty(context.getTargetList())) {
+            return false;
+        }
+        Set<String> pkNames = PrimaryKeyUtil.findPrimaryKeyFields(targetFields).stream().map(Field::getName).collect(Collectors.toSet());
+        for (Map row : context.getTargetList()) {
+            for (Field field : targetFields) {
+                if (!isPrimaryKeyField(pkNames, field.getName()) && getRowValue(row, field.getName()) == null) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isPrimaryKeyField(Set<String> pkNames, String fieldName) {
+        for (String pkName : pkNames) {
+            if (pkName != null && pkName.equalsIgnoreCase(fieldName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object getRowValue(Map row, String fieldName) {
+        if (CollectionUtils.isEmpty(row) || StringUtil.isBlank(fieldName)) {
+            return null;
+        }
+        if (row.containsKey(fieldName)) {
+            return row.get(fieldName);
+        }
+        for (Object key : row.keySet()) {
+            if (key instanceof String && ((String) key).equalsIgnoreCase(fieldName)) {
+                return row.get(key);
+            }
+        }
+        return null;
+    }
+
+    private Result writePartialUpdate(DatabaseConnectorInstance connectorInstance, PluginContext context) {
+        List<Map> data = context.getTargetList();
+        List<Field> targetFields = context.getTargetFields();
+        List<Field> pkFields = PrimaryKeyUtil.findExistPrimaryKeyFields(targetFields);
+        Set<String> pkNames = pkFields.stream().map(Field::getName).collect(Collectors.toSet());
+        String tableQualifier = resolveTableQualifier(context);
+        String event = context.getEvent();
+        Result result = new Result();
+
+        for (Map row : data) {
+            List<Field> setFields = new ArrayList<>();
+            for (Field field : targetFields) {
+                if (!isPrimaryKeyField(pkNames, field.getName()) && getRowValue(row, field.getName()) != null) {
+                    setFields.add(field);
+                }
+            }
+            if (setFields.isEmpty()) {
+                result.getSuccessData().add(row);
+                continue;
+            }
+            String executeSql = buildPartialUpdateSql(tableQualifier, setFields, pkFields);
+            Object[] args = buildPartialUpdateArgs(row, setFields, pkFields);
+            try {
+                int affected = connectorInstance.execute(databaseTemplate->databaseTemplate.update(executeSql, args));
+                if (affected == 0) {
+                    throw new SdkException("数据不存在或执行异常");
+                }
+                result.getSuccessData().add(row);
+                logPartialUpdate(context, event, row, true, null);
+            } catch (Exception e) {
+                result.getFailData().add(row);
+                result.getError().append(context.getTraceId()).append(" SQL:").append(executeSql).append(System.lineSeparator()).append("ERROR:")
+                        .append(e.getMessage()).append(System.lineSeparator());
+                logPartialUpdate(context, event, row, false, e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    private String resolveTableQualifier(PluginContext context) {
+        String upsertSql = context.getCommand().get(ConnectorConstant.OPERTION_UPSERT);
+        if (StringUtil.isNotBlank(upsertSql)) {
+            int start = upsertSql.indexOf("INSERT INTO ");
+            if (start >= 0) {
+                start += "INSERT INTO ".length();
+                int end = upsertSql.indexOf('(', start);
+                if (end > start) {
+                    return upsertSql.substring(start, end).trim();
+                }
+            }
+        }
+        return buildWithQuotation(context.getTargetTable().getName());
+    }
+
+    private String buildPartialUpdateSql(String tableQualifier, List<Field> setFields, List<Field> pkFields) {
+        StringBuilder sql = new StringBuilder(generateUniqueCode());
+        sql.append("UPDATE ").append(tableQualifier).append(" SET ");
+        List<String> sets = new ArrayList<>();
+        for (Field field : setFields) {
+            String fieldName = buildWithQuotation(field.getName());
+            List<String> values = new ArrayList<>();
+            if (buildCustomValue(values, field)) {
+                sets.add(fieldName + "=" + values.get(0));
+            } else {
+                sets.add(fieldName + "=?");
+            }
+        }
+        sql.append(StringUtil.join(sets, StringUtil.COMMA));
+        sql.append(" WHERE ");
+        appendPrimaryKeys(sql, pkFields.stream().map(Field::getName).collect(Collectors.toList()));
+        return sql.toString();
+    }
+
+    private Object[] buildPartialUpdateArgs(Map row, List<Field> setFields, List<Field> pkFields) {
+        List<Object> args = new ArrayList<>();
+        for (Field field : setFields) {
+            appendFieldArg(args, row, field);
+        }
+        for (Field field : pkFields) {
+            appendFieldArg(args, row, field);
+        }
+        return args.toArray();
+    }
+
+    private void appendFieldArg(List<Object> args, Map row, Field field) {
+        Object value = getRowValue(row, field.getName());
+        if (value instanceof CustomData) {
+            args.addAll(((CustomData) value).apply());
+            return;
+        }
+        args.add(value);
+    }
+
+    private void logPartialUpdate(PluginContext context, String event, Map row, boolean success, String message) {
+        if (success) {
+            if (context.isEnablePrintTraceInfo()) {
+                logger.info("{} {}表事件{}, 执行{}成功, {}", context.getTraceId(), context.getTargetTable().getName(), context.getEvent(), event, row);
+            }
+            return;
+        }
+        logger.error("{} {}表事件{}, 执行{}失败:{}, DATA:{}", context.getTraceId(), context.getTargetTable().getName(), context.getEvent(), event, message,
+                row);
     }
 
     /**
